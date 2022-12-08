@@ -26,10 +26,16 @@ namespace XLua
     using System.Diagnostics;
     using System.Linq;
 
+    //问题：这个Dictionary的比较器和默认的比较器有什么区别？不理解
     class ReferenceEqualsComparer : IEqualityComparer<object>
     {
         public new bool Equals(object o1, object o2)
         {
+            //从“ReferenceEquals”的用法来看，当参数“o1, o2”都为ValueType时，结果必然为false，
+            //即如果字典有有两个key都为“100”, 此时会判定为两个不同的key.
+            //即dic.Add(100, "a")后再次执行 dic.Add(100, "a")会被认为是两个不同的key
+            //但这样做的原因是什么？不理解
+            //而对于引用类型则正常返回比较结果
             return object.ReferenceEquals(o1, o2);
         }
         public int GetHashCode(object obj)
@@ -136,20 +142,29 @@ namespace XLua
         public bool TryDelayWrapLoader(RealStatePtr L, Type type)
         {
             if (loaded_types.ContainsKey(type)) return true;
+            //“loaded_types”的作用是用于鉴别注册表中是否有该type类型的key，
+            //其实可以直接通过“luaL_getmetatable(L, type.FullName)”获取到，
+            //但这里为了方便，使用自定义的数据集合“loaded_types”来直接查询更为方便
             loaded_types.Add(type, true);
 
+            //创建一个新的table，在注册表“LuaIndexes.LUA_REGISTRYINDEX”中创建registryTable[typeName] = table
+            //但由于是这里是为基类类型创建的table，所以通常将这里创建的table作为“元表”来使用
+            //但该table从本质上来讲和普通的table并没有区别
+            //并且该方法最终会将新创建的table压入栈
             LuaAPI.luaL_newmetatable(L, type.FullName); //先建一个metatable，因为加载过程可能会需要用到
-            LuaAPI.lua_pop(L, 1);
+            LuaAPI.lua_pop(L, 1);     //将新建的table出栈，恢复栈L原始配置
 
             Action<RealStatePtr> loader;
             int top = LuaAPI.lua_gettop(L);
+            //部分type需要延时加载，此时使用该type专用的“loader”逻辑加载
             if (delayWrap.TryGetValue(type, out loader))
             {
-                delayWrap.Remove(type);
-                loader(L);
+                delayWrap.Remove(type);   //从延时加载的集合中删除该type元素，避免重复加载
+                loader(L);  //开始加载该类型
             }
             else
             {
+                //通用的加载type的逻辑
 #if !GEN_CODE_MINIMIZE && !ENABLE_IL2CPP && (UNITY_EDITOR || XLUA_GENERAL) && !FORCE_REFLECTION && !NET_STANDARD_2_0
                 if (!DelegateBridge.Gen_Flag && !type.IsEnum() && !typeof(Delegate).IsAssignableFrom(type) && Utils.IsPublic(type))
                 {
@@ -188,10 +203,10 @@ namespace XLua
                 }
                 GetTypeId(L, nested_type);
             }
-            
+
             return true;
         }
-        
+
         public void Alias(Type type, string alias)
         {
             Type alias_type = FindType(alias);
@@ -233,6 +248,7 @@ namespace XLua
             assemblies.Add(Assembly.GetExecutingAssembly());
             var assemblies_usorted = AppDomain.CurrentDomain.GetAssemblies();
 #endif
+            //将dll按需求排序
             addAssemblieByName(assemblies_usorted, "mscorlib,");
             addAssemblieByName(assemblies_usorted, "System,");
             addAssemblieByName(assemblies_usorted, "System.Core,");
@@ -245,10 +261,12 @@ namespace XLua
             }
 
             this.luaEnv=luaenv;
+            //ObjectCast和ObjectCheck是ObjectTranslator中最重要的方法
             objectCasters = new ObjectCasters(this);
             objectCheckers = new ObjectCheckers(this);
+            //管理所有Wrap方法的类
             methodWrapsCache = new MethodWrapsCache(this, objectCheckers, objectCasters);
-			metaFunctions=new StaticLuaCallbacks();
+			metaFunctions = new StaticLuaCallbacks();
 
             importTypeFunction = new LuaCSFunction(StaticLuaCallbacks.ImportType);
             loadAssemblyFunction = new LuaCSFunction(StaticLuaCallbacks.LoadAssembly);
@@ -400,7 +418,7 @@ namespace XLua
 #if !UNITY_WSA || UNITY_EDITOR
                             Delegate.CreateDelegate(delegateType, o, methodInfo);
 #else
-                            methodInfo.CreateDelegate(delegateType, bridge); 
+                            methodInfo.CreateDelegate(delegateType, bridge);
 #endif
                     }
                     else
@@ -447,7 +465,7 @@ namespace XLua
 #if !UNITY_WSA || UNITY_EDITOR
                             Delegate.CreateDelegate(delegateType, o, foundMethod);
 #else
-                            foundMethod.CreateDelegate(delegateType, o); 
+                            foundMethod.CreateDelegate(delegateType, o);
 #endif
                         break;
                     }
@@ -714,7 +732,7 @@ namespace XLua
             LuaAPI.lua_createtable(L, 1, 4); // 4 for __gc, __tostring, __index, __newindex
             common_delegate_meta = LuaAPI.luaL_ref(L, LuaIndexes.LUA_REGISTRYINDEX);
         }
-		
+
 		internal void createFunctionMetatable(RealStatePtr L)
 		{
 			LuaAPI.lua_newtable(L);
@@ -733,7 +751,7 @@ namespace XLua
 
             typeIdMap.Add(typeof(LuaCSFunction), type_id);
         }
-		
+
 		internal Type FindType(string className, bool isQualifiedName = false)
 		{
             foreach (Assembly assembly in assemblies)
@@ -780,15 +798,15 @@ namespace XLua
             }
             return false;
         }
-		
+
 		internal void collectObject(int obj_index_to_collect)
 		{
 			object o;
-			
+
 			if (objects.TryGetValue(obj_index_to_collect, out o))
 			{
 				objects.Remove(obj_index_to_collect);
-                
+
                 if (o != null)
                 {
                     int obj_index;
@@ -809,7 +827,7 @@ namespace XLua
                 }
 			}
 		}
-		
+
 		int addObject(object obj, bool is_valuetype, bool is_enum)
 		{
             int index = objects.Add(obj);
@@ -821,10 +839,10 @@ namespace XLua
             {
                 reverseMap[obj] = index;
             }
-			
+
 			return index;
 		}
-		
+
 		internal object GetObject(RealStatePtr L,int index)
 		{
             return (objectCasters.GetCaster(typeof(object))(L, index, null));
@@ -965,7 +983,7 @@ namespace XLua
             Array ret = Array.CreateInstance(type, Math.Max(LuaAPI.lua_gettop(L) - index + 1, 0)); //这个函数，长度为0的话，返回null
             for (int i = 0; i < ret.Length; i++)
             {
-                ret.SetValue(GetObject(L, index + i, type), i); 
+                ret.SetValue(GetObject(L, index + i, type), i);
             }
             return ret;
         }
@@ -984,7 +1002,7 @@ namespace XLua
 
         public T GetDelegate<T>(RealStatePtr L, int index) where T :class
         {
-            
+
             if (LuaAPI.lua_isfunction(L, index))
             {
                 return CreateDelegateBridge(L, typeof(T), index) as T;
@@ -1027,9 +1045,12 @@ namespace XLua
         internal int getTypeId(RealStatePtr L, Type type, out bool is_first, LOGLEVEL log_level = LOGLEVEL.WARN)
         {
             int type_id;
-            is_first = false;
+            is_first = false;    //代表该类型是否是初次在“typeIdMap”中添加
             if (!typeIdMap.TryGetValue(type, out type_id)) // no reference
             {
+                //针对“Array”,"多播委托"以及它们的扩展类型，都使用默认的typeid
+                //注意：该typeid是指代“LuaIndexes.LUA_REGISTRYINDEX”的table中的key
+                //在“LuaIndexes.LUA_REGISTRYINDEX”的table中：table[typeid] = type
                 if (type.IsArray)
                 {
                     if (common_array_meta == -1) throw new Exception("Fatal Exception! Array Metatable not inited!");
@@ -1044,19 +1065,27 @@ namespace XLua
 
                 is_first = true;
                 Type alias_type = null;
+                //针对部分类无法访问时，使用其基类或接口类来访问。主要为了兼容
                 aliasCfg.TryGetValue(type, out alias_type);
+                //这里虽然调用的是“luaL_getmetatable”，但实际执行逻辑“只是在注册表中通过key的形式获取其value”
+                //“luaL_getmetatable”本质上会调用“rawget”方法
                 LuaAPI.luaL_getmetatable(L, alias_type == null ? type.FullName : alias_type.FullName);
+                //注意：使用以上“luaL_getmetatable”(本质上是rawget方法)后，
+                //当前栈顶元素是注册表中RegistryTable[type.fullName]的值
 
                 if (LuaAPI.lua_isnil(L, -1)) //no meta yet, try to use reflection meta
                 {
                     LuaAPI.lua_pop(L, 1);
 
+                    //如果“LuaIndexes.LUA_REGISTRYINDEX”索引的table中没有该type对应的value值，
+                    //此时使用“TryDelayWrapLoader”强制生成
                     if (TryDelayWrapLoader(L, alias_type == null ? type : alias_type))
                     {
                         LuaAPI.luaL_getmetatable(L, alias_type == null ? type.FullName : alias_type.FullName);
                     }
                     else
                     {
+                        //如果为该type生成value失败，则直接结束该方法，后面代码不再执行
                         throw new Exception("Fatal: can not load metatable of type:" + type);
                     }
                 }
@@ -1070,21 +1099,31 @@ namespace XLua
                 {
                     if (type.IsEnum())
                     {
+                        //在指定table中创建"枚举中“位与”运算"key-value：
+                        //key —— string类型 和对应的value —— luaCSFunction
                         LuaAPI.xlua_pushasciistring(L, "__band");
                         LuaAPI.lua_pushstdcallcfunction(L, metaFunctions.EnumAndMeta);
                         LuaAPI.lua_rawset(L, -3);
+
+                        //在指定table中为“位或”运算创建key-value：
+                        //key —— “__bor”, value —— “LuaCSFunction”
                         LuaAPI.xlua_pushasciistring(L, "__bor");
                         LuaAPI.lua_pushstdcallcfunction(L, metaFunctions.EnumOrMeta);
                         LuaAPI.lua_rawset(L, -3);
                     }
                     if (typeof(IEnumerable).IsAssignableFrom(type))
                     {
+                        //为集合迭代器在指定table中生成key-value:
+                        //注意：这里的value使用的是table已然创建的通用迭代器方法对应的key值
                         LuaAPI.xlua_pushasciistring(L, "__pairs");
                         LuaAPI.lua_getref(L, enumerable_pairs_func);
                         LuaAPI.lua_rawset(L, -3);
                     }
+                    //为栈上指定索引处的元素生成副本，并将该副本压入栈
                     LuaAPI.lua_pushvalue(L, -1);
+                    //为当前栈顶元素在指定table中生成key，并将该栈顶元素出栈
                     type_id = LuaAPI.luaL_ref(L, LuaIndexes.LUA_REGISTRYINDEX);
+
                     LuaAPI.lua_pushnumber(L, type_id);
                     LuaAPI.xlua_rawseti(L, -2, 1);
                     LuaAPI.lua_pop(L, 1);
@@ -1100,6 +1139,7 @@ namespace XLua
             return type_id;
         }
 
+        //将基元类数据转换后压入栈顶
         void pushPrimitive(RealStatePtr L, object o)
         {
             if (o is sbyte || o is byte || o is short || o is ushort ||
@@ -1152,6 +1192,9 @@ namespace XLua
                 return;
             }
 
+            //如果参数“o”本身已经是“Type”类型，此时再次使用“GetType”得到的结果一般都是“System.RuntimeType”
+            //此时通过“o.GetType()”获取到的结果必然不满足以下任意条件，所以直接走到最后的“else”里，
+            //即直接将该type对象压入栈中
             Type type = o.GetType();
             if (type.IsPrimitive())
             {
@@ -1177,7 +1220,7 @@ namespace XLua
             {
                 Push(L, o as LuaCSFunction);
             }
-            else if (o is ValueType)
+            else if (o is ValueType)   //如果“o”为值类型，但不是“基元类isPrimitive”，如Enum类型等
             {
                 PushCSObject push;
                 if (custom_push_funcs.TryGetValue(o.GetType(), out push))
@@ -1191,6 +1234,8 @@ namespace XLua
             }
             else
             {
+                //当所有条件都不满足时，则直接将该对象压入栈中，如当“o”本身即为Type对象时，
+                //此时经过再次的“Type type = o.GetType()”导致类型获取出错，这种情况则无需转换直接压入栈中即可
                 Push(L, o);
             }
         }
@@ -1211,7 +1256,7 @@ namespace XLua
                 string sflags = LuaAPI.lua_tostring(L, idx);
                 res = Enum.Parse(type, sflags);
             }
-            else 
+            else
             {
                 return LuaAPI.luaL_error(L, "#1 argument must be a integer or a string");
             }
@@ -1261,7 +1306,7 @@ namespace XLua
             bool is_enum = type.GetTypeInfo().IsEnum;
             bool is_valuetype = type.GetTypeInfo().IsValueType;
 #endif
-            bool needcache = !is_valuetype || is_enum;
+            bool needcache = !is_valuetype || is_enum;   //只有引用类型以及值类型中的“枚举”需要设置缓存
             if (needcache && (is_enum ? enumMap.TryGetValue(o, out index) : reverseMap.TryGetValue(o, out index)))
             {
                 if (LuaAPI.xlua_tryget_cachedud(L, index, cacheRef) == 1)
@@ -1272,11 +1317,11 @@ namespace XLua
                 //collectObject(index);
             }
 
-            bool is_first;
+            bool is_first;   //这个“is_first”指代的是是否初次往“typeIdMap”中添加该type
             int type_id = getTypeId(L, type, out is_first);
 
             //如果一个type的定义含本身静态readonly实例时，getTypeId会push一个实例，这时候应该用这个实例
-            if (is_first && needcache && (is_enum ? enumMap.TryGetValue(o, out index) : reverseMap.TryGetValue(o, out index))) 
+            if (is_first && needcache && (is_enum ? enumMap.TryGetValue(o, out index) : reverseMap.TryGetValue(o, out index)))
             {
                 if (LuaAPI.xlua_tryget_cachedud(L, index, cacheRef) == 1)
                 {
@@ -1523,7 +1568,7 @@ namespace XLua
         }
 
         private Dictionary<Type, Delegate> push_func_with_type = null;
-        
+
         bool tryGetPushFuncByType<T>(Type type, out T func) where T : class
         {
             if (push_func_with_type == null)
@@ -1625,7 +1670,7 @@ namespace XLua
                 return ret;
             }));
 
-            registerCustomOp(type, 
+            registerCustomOp(type,
                 (RealStatePtr L, object obj) => {
                     push(L, (T)obj);
                 },
@@ -1672,7 +1717,7 @@ namespace XLua
             {
                 throw new Exception("pack fail for decimal ,value=" + val);
             }
-            
+
         }
 
         public bool IsDecimal(RealStatePtr L, int index)

@@ -223,6 +223,8 @@ namespace XLua
         public ObjectCasters(ObjectTranslator translator)
         {
             this.translator = translator;
+            //为不同的数据类型创建相对应的ObjectCast：将不同类型的lua值转换成目标类型
+            //PS：该数据类型需要首先预判(可借助ObjectCheck来获取)，然后使用该类型对应的ObjectCast转换
             castersMap[typeof(char)] = charCaster;
             castersMap[typeof(sbyte)] = sbyteCaster;
             castersMap[typeof(byte)] = byteCaster;
@@ -435,7 +437,7 @@ namespace XLua
                     return (obj != null && type.IsAssignableFrom(obj.GetType())) ? obj : null;
                 }
                 return null;
-            }; 
+            };
 
             if (typeof(Delegate).IsAssignableFrom(type))
             {
@@ -729,7 +731,7 @@ namespace XLua
             Type underlyingType = Nullable.GetUnderlyingType(type);
             if (underlyingType != null)
             {
-                return genNullableCaster(GetCaster(underlyingType)); 
+                return genNullableCaster(GetCaster(underlyingType));
             }
             ObjectCast oc;
             if (!castersMap.TryGetValue(type, out oc))

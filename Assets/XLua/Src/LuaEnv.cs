@@ -77,10 +77,10 @@ namespace XLua
 #if GEN_CODE_MINIMIZE
                 LuaAPI.xlua_set_csharp_wrapper_caller(InternalGlobals.CSharpWrapperCallerPtr);
 #endif
-                // Create State
+                //创建lua堆栈
                 rawL = LuaAPI.luaL_newstate();
 
-                //Init Base Libs
+                //初始化状态机中的xlua标准库
                 LuaAPI.luaopen_xlua(rawL);
                 LuaAPI.luaopen_i64lib(rawL);
 

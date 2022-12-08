@@ -71,7 +71,7 @@ namespace XLua
                 t.Wait();
             }
             return _assemblies;
-            
+
         }
         public static async System.Threading.Tasks.Task<List<Assembly>> GetAssemblyList()
         {
@@ -826,29 +826,35 @@ namespace XLua
 
             int top_enter = LuaAPI.lua_gettop(L);
 			ObjectTranslator translator = ObjectTranslatorPool.Instance.Find(L);
-			//create obj meta table
-			LuaAPI.luaL_getmetatable(L, type.FullName);
+			//获取注册表中该type对应的数值，即一个普通的table，但由于该table的特殊用途，这里当作“元表”来处理
+			LuaAPI.luaL_getmetatable(L, type.FullName);  //注意：即使没有，也会压nil入栈
 			if (LuaAPI.lua_isnil(L, -1))
 			{
 				LuaAPI.lua_pop(L, 1);
 				LuaAPI.luaL_newmetatable(L, type.FullName);
 			}
+
+			//执行完“luaL_newmetatable”后此时栈顶为新创建的空表“typeMetatable”
 			LuaAPI.lua_pushlightuserdata(L, LuaAPI.xlua_tag());
 			LuaAPI.lua_pushnumber(L, 1);
+			//在"typeMetatable"中设置键值对：typeMetatable[xlua_tag] = 1，并将key，value出栈
 			LuaAPI.lua_rawset(L, -3);
-			int obj_meta = LuaAPI.lua_gettop(L);
+			int obj_meta = LuaAPI.lua_gettop(L);  //由于key,value已出栈，故当前栈顶为“typeMetatable”
 
-			LuaAPI.lua_newtable(L);
-			int cls_meta = LuaAPI.lua_gettop(L);
+			LuaAPI.lua_newtable(L);  //创建一个空table，并将该table压入栈
+			int cls_meta = LuaAPI.lua_gettop(L);  //获取该table的索引
 
+			//为obj的“field, getter, setter”分别设置table，并获取该table在栈L中的索引
 			LuaAPI.lua_newtable(L);
 			int obj_field = LuaAPI.lua_gettop(L);
 			LuaAPI.lua_newtable(L);
 			int obj_getter = LuaAPI.lua_gettop(L);
 			LuaAPI.lua_newtable(L);
 			int obj_setter = LuaAPI.lua_gettop(L);
+
 			LuaAPI.lua_newtable(L);
 			int cls_field = LuaAPI.lua_gettop(L);
+
             //set cls_field to namespace
             SetCSTable(L, type, cls_field);
             //finish set cls_field to namespace
@@ -933,7 +939,7 @@ namespace XLua
 			LuaAPI.lua_pushvalue(L, -3);
 			LuaAPI.lua_rawset(L, -3);
 			LuaAPI.lua_pop(L, 1);
-			LuaAPI.lua_rawset(L, cls_meta); // set __index 
+			LuaAPI.lua_rawset(L, cls_meta); // set __index
 
 			LuaAPI.xlua_pushasciistring(L, "__newindex");
 			LuaAPI.lua_pushvalue(L, cls_setter);
@@ -1305,6 +1311,7 @@ namespace XLua
 			LuaAPI.lua_pop(L, 4);
 		}
 
+		//这里的path并不是该type真实存在的物理路径，而是其在代码结构中路径，与脚本物理存放路径无关
 		static List<string> getPathOfType(Type type)
 		{
 			List<string> path = new List<string>();
@@ -1314,15 +1321,17 @@ namespace XLua
 				path.AddRange(type.Namespace.Split(new char[] { '.' }));
 			}
 
+			//“namespace.xxx”，则classname从“.”后第一位开始计算
+			//经过实际测试：当获取任意对象的type时，type的string形式会自动包含其namespace
 			string class_name = type.ToString().Substring(type.Namespace == null ? 0 : type.Namespace.Length + 1);
 
-			if (type.IsNested)
+			if (type.IsNested)   //嵌套类：类名使用“+”串联
 			{
 				path.AddRange(class_name.Split(new char[] { '+' }));
 			}
 			else
 			{
-				path.Add(class_name);
+				path.Add(class_name);  //如不是嵌套类，则可直接使用该类名
 			}
 			return path;
 		}
@@ -1333,6 +1342,7 @@ namespace XLua
             LuaAPI.xlua_pushasciistring(L, LuaEnv.CSHARP_NAMESPACE);
             LuaAPI.lua_rawget(L, LuaIndexes.LUA_REGISTRYINDEX);
 
+            //获取该type的代码路径(部分类型，如nestedType本身并没有物理存放路径，所以这里只使用代码路径)
             List<string> path = getPathOfType(type);
 
 			for (int i = 0; i < path.Count; ++i)
@@ -1357,44 +1367,81 @@ namespace XLua
 		public static void SetCSTable(RealStatePtr L, Type type, int cls_table)
 		{
 			int oldTop = LuaAPI.lua_gettop(L);
-			cls_table = abs_idx(oldTop, cls_table);
+			//"abs_idx"作用仅仅只是将任意idx转换成正序的栈索引，方便后续计算
+			cls_table = abs_idx(oldTop, cls_table);  //计算得到该table的正序索引
+
             LuaAPI.xlua_pushasciistring(L, LuaEnv.CSHARP_NAMESPACE);
+            //获取注册表中key为“CSHARP_NAMESPACE”的value，并将该value入栈
             LuaAPI.lua_rawget(L, LuaIndexes.LUA_REGISTRYINDEX);
 
+            //获取type的代码路径(非物理存放路径)
             List<string> path = getPathOfType(type);
 
 			for (int i = 0; i < path.Count - 1; ++i)
 			{
 				LuaAPI.xlua_pushasciistring(L, path[i]);
+				//由于将“path[i]”入栈，因此“CSHARP_NAMESPACE”的value处在“-2”的位置
+				//“xlua_pgettable”：获取RegestryTable[CSHARP_NAMESPACE]中key为“path[i]”的value, 并将该value入栈
+				//                  如果执行失败，则将错误信息入栈，并返回非0数值("0"代表正常执行)
+				//注意："lua_gettable"的返回值是入栈元素的值类型lua_type，与此处“xlua_pgettable”返回值意义不同
+				//C语言文件"lua.h"中定义的lua_type: LUA_TNIL - -1, LUA_TNIL - 0, LUA_TBOOLEAN - 1
 				if (0 != LuaAPI.xlua_pgettable(L, -2))
 				{
+					//执行异常，此时栈顶存放错误信息
 					var err = LuaAPI.lua_tostring(L, -1);
-					LuaAPI.lua_settop(L, oldTop);
+					LuaAPI.lua_settop(L, oldTop);  //恢复栈初始配置，然后抛出异常
 					throw new Exception("SetCSTable for [" + type + "] error: " + err);
 				}
+
+				//当“path[i]”的value为nil时，则需要为其赋值
 				if (LuaAPI.lua_isnil(L, -1))
 				{
+					//先将栈顶的nil值出栈，以便后续入栈“path[i]”的正确数值；此时栈顶元素为“CSHARP_NAMESPACE”的value
 					LuaAPI.lua_pop(L, 1);
-					LuaAPI.lua_createtable(L, 0, 0);
+					LuaAPI.lua_createtable(L, 0, 0);  //入栈新table
 					LuaAPI.xlua_pushasciistring(L, path[i]);
-					LuaAPI.lua_pushvalue(L, -2);
+					//注意：此时栈中元素“-3”: CSHARP_NAMESPACE的table, "-2"：空表， “-1”：path[i]
+					LuaAPI.lua_pushvalue(L, -2); //将“-2”索引处的值拷贝副本，并压入栈顶
+					//此时栈中元素顺序：“-4”：CSHARP_NAMESPACE的table， “-3”：空表， “-2”： path[i](key), "-1"：空表副本(value)
+					//因此这里是设置“CSHARP_NAMESPACE[key] = value” —— 非常重要
 					LuaAPI.lua_rawset(L, -4);
+					//此时栈中元素顺序：“-2”：CSHARP_NAMESPACE的table，“-1”：空表，并且CSHARP_NAMESPACE[path[i]] = {}
 				}
-				else if (!LuaAPI.lua_istable(L, -1))
+				else if (!LuaAPI.lua_istable(L, -1))    //这里限定命名空间对应的value都是table
 				{
-					LuaAPI.lua_settop(L, oldTop);
+					LuaAPI.lua_settop(L, oldTop);  //恢复栈初始配置
 					throw new Exception("SetCSTable for [" + type + "] error: ancestors is not a table!");
 				}
-				LuaAPI.lua_remove(L, -2);
+				LuaAPI.lua_remove(L, -2);  //移除栈中索引“-2”的元素，故CSHARP_NAMESPACE的table被移除，此时栈顶元素为空表
+
+				//注意：每一次遍历结束后，栈顶存放的是该“path[i]”对应的value值，默认都是LUA_TTABLE
+
+				//******* START: 重要问题 ***********
+				//描述：为什么设置键值对时使用的是索引“-4”，并且每次遍历后移除的元素索引是“-2”
+				//解答：
+				//1.Type的命名空间存在层级递进的关系，并且命名空间存在多层嵌套，所以在设置第一层path[i]后，
+				//  第二层的键值对应该在第一层的table中设立，而不在总的“CSHARP_NAMESPACE的table”中设立，
+				//  如果某个总的命名空间下有多个子的命名空间，如"System.Text", "System.IO"，
+				//  此时只需要在“path[i] = System”的value表中查找“Text”和“IO”
+				//  因此每次迭代完毕后，栈顶存放的都是上次迭代的LUA_TTABLE值，以便继续进行下一次迭代
+				//2.每次迭代后都移除“-2”，是为了避免在循环遍历的过程中，栈中元素过多，因此把不需要的元素都删除掉
+				//******* END: 重要问题 ***********
 			}
 
-			LuaAPI.xlua_pushasciistring(L, path[path.Count - 1]);
+			//由于遍历条件限制“i < path.Count -1”，因此遍历结束后栈顶存放的是classname的上一次命名空间的LUA_TTABLE值
+			LuaAPI.xlua_pushasciistring(L, path[path.Count - 1]);  //将classname作为key入栈
 			LuaAPI.lua_pushvalue(L, cls_table);
+			//在classname的直接父类的table中设置键值对，但注意：此时设置的value是栈L中的索引，而非直接的table
+			//所以如果需要获取该classname的value值，则需要通过“lua_pushvalue(L, index)”压副本入栈顶
+			//移除时则通过“lua_remove(L, index)”
 			LuaAPI.lua_rawset(L, -3);
+			//移除唯一剩下的命名空间table，此时栈恢复初始配置。至此该type在“CSHARP_NAMESPACE”表格中的的路径配置结束
 			LuaAPI.lua_pop(L, 1);
 
+			//重新将注册表中“CSHARP_NAMESPACE”对应的value表入栈
             LuaAPI.xlua_pushasciistring(L, LuaEnv.CSHARP_NAMESPACE);
             LuaAPI.lua_rawget(L, LuaIndexes.LUA_REGISTRYINDEX);
+
             ObjectTranslatorPool.Instance.Find(L).PushAny(L, type);
 			LuaAPI.lua_pushvalue(L, cls_table);
 			LuaAPI.lua_rawset(L, -3);
