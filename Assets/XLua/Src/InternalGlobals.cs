@@ -35,6 +35,8 @@ namespace XLua
 
         internal static volatile ObjectTranslatorPool objectTranslatorPool = new ObjectTranslatorPool();
 
+        //注册表在栈L中的索引。当初始化时会通过“xlua.dll”中的“xlua_get_registry_index”方法进行初始化
+        //当设定“LUA_REGISTRYINDEX”数值后，同时也代表栈L的空间至少大于math.abs(LUA_REGISTRYINDEX)
         internal static volatile int LUA_REGISTRYINDEX = -10000;
 
         internal static volatile Dictionary<string, string> supportOp = new Dictionary<string, string>()

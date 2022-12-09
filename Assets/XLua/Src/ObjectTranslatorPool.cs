@@ -47,7 +47,9 @@ namespace XLua
         public ObjectTranslatorPool ()
 		{
 		}
-		
+
+        //由于"xlua.dll"的API没有注释，这里只能大概猜测其作用：
+        //作用：将“LuaEnv”中新建的“rawL”与“objectTranslator”绑定键值对
 		public void Add (RealStatePtr L, ObjectTranslator translator)
 		{
 #if THREAD_SAFE || HOTFIX_ENABLE
@@ -80,12 +82,12 @@ namespace XLua
                     lastTranslator = translators[ptr].Target as ObjectTranslator;
                     return lastTranslator;
                 }
-                
+
                 return null;
 #endif
             }
         }
-		
+
 		public void Remove (RealStatePtr L)
 		{
 #if THREAD_SAFE || HOTFIX_ENABLE
@@ -98,7 +100,7 @@ namespace XLua
                 var ptr = LuaAPI.xlua_gl(L);
                 if (!translators.ContainsKey (ptr))
                     return;
-                
+
                 if (lastPtr == ptr)
                 {
                     lastPtr = default(RealStatePtr);

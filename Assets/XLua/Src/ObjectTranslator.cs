@@ -231,6 +231,8 @@ namespace XLua
             }
         }
 
+        //该ObjectTranslator可能在整个游戏运行中是唯一的，其作用与“XXXManager”类似
+        //这里初始化时为“objectCaster, objectChecker, methodWrapsCache, metaFunctions, importTypeFunction”等都赋值完毕
         public ObjectTranslator(LuaEnv luaenv,RealStatePtr L)
 		{
 #if XLUA_GENERAL  || (UNITY_WSA && !UNITY_EDITOR)
@@ -260,27 +262,38 @@ namespace XLua
                 }
             }
 
-            this.luaEnv=luaenv;
+            this.luaEnv = luaenv;
             //ObjectCast和ObjectCheck是ObjectTranslator中最重要的方法
             objectCasters = new ObjectCasters(this);
             objectCheckers = new ObjectCheckers(this);
             //管理所有Wrap方法的类
             methodWrapsCache = new MethodWrapsCache(this, objectCheckers, objectCasters);
-			metaFunctions = new StaticLuaCallbacks();
-
+            //设置一些通用的方法：
+			metaFunctions = new StaticLuaCallbacks(); //这些方法需要依赖具体实例来使用
+            //“ObjectTranslator”中包含“importType”, "loadAssembly", "Cast"等方法
             importTypeFunction = new LuaCSFunction(StaticLuaCallbacks.ImportType);
             loadAssemblyFunction = new LuaCSFunction(StaticLuaCallbacks.LoadAssembly);
             castFunction = new LuaCSFunction(StaticLuaCallbacks.Cast);
+            //为了方便管理，将这些方法全部放在“StaticLuaCallBacks”脚本中
 
-            LuaAPI.lua_newtable(L);
-            LuaAPI.lua_newtable(L);
+            //从以下代码的执行作用来看，主要目的就是创建table2，并设置键值对table2[__mode] = v 和元表table1(空表)
+            //并在注册表中为table2设置键值对：RegistryTable[cacheRef] = table2
+            LuaAPI.lua_newtable(L);   //table1
+            LuaAPI.lua_newtable(L);   //table2
             LuaAPI.xlua_pushasciistring(L, "__mode");
             LuaAPI.xlua_pushasciistring(L, "v");
-            LuaAPI.lua_rawset(L, -3);
-            LuaAPI.lua_setmetatable(L, -2);
-            cacheRef = LuaAPI.luaL_ref(L, LuaIndexes.LUA_REGISTRYINDEX);
+            LuaAPI.lua_rawset(L, -3);  //该句执行完毕后：table2[__mode] = v,
+            //此时栈中元素顺序：-1 —— table1, -2 —— table2
 
-            initCSharpCallLua();
+            //该句执行逻辑：将当前栈顶元素table1出栈，并作为参数“-2”索引处的元素的元表
+            //相当于lua语言里的“setmetatable(table2, table1)”
+            LuaAPI.lua_setmetatable(L, -2);  //执行结束后，栈顶元素为table2
+            //将栈顶元素table2出栈，并在注册表中为“table2”生成key，并返回该key数值
+            cacheRef = LuaAPI.luaL_ref(L, LuaIndexes.LUA_REGISTRYINDEX);
+            //执行结束后，栈L恢复初始配置顺序。
+            //并且注册表中包含键值对：RegistryTable[cacheRef] = table2, 且table2的元表为table1(空表)
+
+            initCSharpCallLua();   //针对特殊平台或环境需要初始化相关配置，其他情况则无需处理
         }
 
         internal enum LOGLEVEL{
@@ -691,22 +704,27 @@ namespace XLua
 
         public void OpenLib(RealStatePtr L)
 		{
+            //从“lua_getglobal”的功能是将全局变量“xlua”的值压入栈，
+            //但区别在于：“lua_getglobal”的返回值是“xlua”值的类型(如果使用的是“lua.h”中定义的lua_type，则结果不为0)
+            // 因此“xlua_getglobal”的返回值必然与“lua_getglobal”不同，估计只是返回是否执行成功而已。
+            //PS：xlua的作者连API的解释都没有，无语。。。
             if (0 != LuaAPI.xlua_getglobal(L, "xlua"))
             {
                 throw new Exception("call xlua_getglobal fail!" + LuaAPI.lua_tostring(L, -1));
             }
+            //此时栈顶元素tableForXlua
             LuaAPI.xlua_pushasciistring(L, "import_type");
 			LuaAPI.lua_pushstdcallcfunction(L,importTypeFunction);
-			LuaAPI.lua_rawset(L, -3);
+			LuaAPI.lua_rawset(L, -3); //此时栈顶为xlua的table，tableForXlua[import_type] = pointer(importTypeFunc)
             LuaAPI.xlua_pushasciistring(L, "import_generic_type");
             LuaAPI.lua_pushstdcallcfunction(L, StaticLuaCallbacks.ImportGenericType);
-            LuaAPI.lua_rawset(L, -3);
+            LuaAPI.lua_rawset(L, -3); //tableForXlua[import_generic_type] = pointer(importGenericType)
             LuaAPI.xlua_pushasciistring(L, "cast");
             LuaAPI.lua_pushstdcallcfunction(L, castFunction);
-            LuaAPI.lua_rawset(L, -3);
+            LuaAPI.lua_rawset(L, -3); //tableForXlua[cast] = pointer(castFunc)
             LuaAPI.xlua_pushasciistring(L, "load_assembly");
 			LuaAPI.lua_pushstdcallcfunction(L,loadAssemblyFunction);
-            LuaAPI.lua_rawset(L, -3);
+            LuaAPI.lua_rawset(L, -3); //tableForXlua[load_assembly] = pointer(loadAssemblyFunc)
             LuaAPI.xlua_pushasciistring(L, "access");
             LuaAPI.lua_pushstdcallcfunction(L, StaticLuaCallbacks.XLuaAccess);
             LuaAPI.lua_rawset(L, -3);
@@ -724,31 +742,41 @@ namespace XLua
             LuaAPI.lua_rawset(L, -3);
             LuaAPI.xlua_pushasciistring(L, "release");
             LuaAPI.lua_pushstdcallcfunction(L, StaticLuaCallbacks.ReleaseCsObject);
-            LuaAPI.lua_rawset(L, -3);
-            LuaAPI.lua_pop(L, 1);
+            LuaAPI.lua_rawset(L, -3); //tableForXlua[release] = pointer(releaseFunc)
+            LuaAPI.lua_pop(L, 1); //在tableForXlua设置完成后，将其从栈顶移除
+            /* TODO:问题
+             * 描述：既然可以直接用StaticLuaCallbacks的static方法来赋值，那为什么要在“ObjectTranslator”的构造方法中
+             *     为“importTypeFunction”，“castFunction”， “loadAssemblyFunction”赋值呢？
+             */
 
+            //无论你如何作秀，这里RegistryTable[common_array_meta]、RegistryTable[common_delegate_meta]都是空表
+            //虽然使用“lua_createtable(L, xx, xx)”, 但这里创建的依然是空表
             LuaAPI.lua_createtable(L, 1, 4); // 4 for __gc, __tostring, __index, __newindex
             common_array_meta = LuaAPI.luaL_ref(L, LuaIndexes.LUA_REGISTRYINDEX);
             LuaAPI.lua_createtable(L, 1, 4); // 4 for __gc, __tostring, __index, __newindex
             common_delegate_meta = LuaAPI.luaL_ref(L, LuaIndexes.LUA_REGISTRYINDEX);
         }
 
+        //为LuaCSFunction的Type创建元表，并在注册表中设立键值对, "type_id"为注册表中该type元表的索引
 		internal void createFunctionMetatable(RealStatePtr L)
 		{
-			LuaAPI.lua_newtable(L);
+			LuaAPI.lua_newtable(L);  //创建新表table1
 			LuaAPI.xlua_pushasciistring(L,"__gc");
 			LuaAPI.lua_pushstdcallcfunction(L,metaFunctions.GcMeta);
-			LuaAPI.lua_rawset(L,-3);
+			LuaAPI.lua_rawset(L,-3); //table1[__gc] = pointer(GcMeta)
+
             LuaAPI.lua_pushlightuserdata(L, LuaAPI.xlua_tag());
             LuaAPI.lua_pushnumber(L, 1);
-            LuaAPI.lua_rawset(L, -3);
+            LuaAPI.lua_rawset(L, -3); //table1[__tag] = 1
 
-            LuaAPI.lua_pushvalue(L, -1);
+            LuaAPI.lua_pushvalue(L, -1); //拷贝“table1”副本并入栈
+            //为栈顶“table1”副本在注册表中设置键值对：RegistryTable[type_id] = table1副本，并将副本出栈
             int type_id = LuaAPI.luaL_ref(L, LuaIndexes.LUA_REGISTRYINDEX);
             LuaAPI.lua_pushnumber(L, type_id);
-            LuaAPI.xlua_rawseti(L, -2, 1);
-            LuaAPI.lua_pop(L, 1);
+            LuaAPI.xlua_rawseti(L, -2, 1); //table1[1] = type_id
+            LuaAPI.lua_pop(L, 1);  //将table1出栈，恢复栈L初始配置
 
+            //这是本方法唯一的目的：设置“LuaCSFunction”类型的元表，并添加入注册表中，typeIdMap记录注册表中的索引
             typeIdMap.Add(typeof(LuaCSFunction), type_id);
         }
 
@@ -1017,6 +1045,7 @@ namespace XLua
             }
         }
 
+        //“int”代表该type在注册表中的索引key，而注册表中有该type的元表
         Dictionary<Type, int> typeIdMap = new Dictionary<Type, int>();
 
         //only store the type id to type map for struct
@@ -1184,6 +1213,7 @@ namespace XLua
             }
         }
 
+        //本质作用是将任意类型对象“o”通过转换后压入栈中
         public void PushAny(RealStatePtr L, object o)
         {
             if (o == null)
@@ -1453,8 +1483,10 @@ namespace XLua
             }
             else
             {
+                //fix_cs_functions的索引可能从”0“开始，记录所有通过”pushFixCSFunction“入栈的”LuaCSFunction“
                 LuaAPI.xlua_pushinteger(L, fix_cs_functions.Count);
                 fix_cs_functions.Add(func);
+                //将该func的指针压入栈中
                 LuaAPI.lua_pushstdcallcfunction(L, metaFunctions.FixCSFunctionWraper, 1);
             }
         }

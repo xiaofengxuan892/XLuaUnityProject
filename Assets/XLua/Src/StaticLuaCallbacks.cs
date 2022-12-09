@@ -22,6 +22,7 @@ namespace XLua
     using System.IO;
     using System.Reflection;
 
+    //负责管理一些通用的方法
     public partial class StaticLuaCallbacks
     {
         internal LuaCSFunction GcMeta, ToStringMeta, EnumAndMeta, EnumOrMeta;

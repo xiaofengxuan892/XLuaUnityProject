@@ -109,7 +109,7 @@ namespace XLua.TemplateEngine
         }
 
         /// <summary>
-        /// Parses the string into regex groups, 
+        /// Parses the string into regex groups,
         /// stores group:value pairs in List of Chunk
         /// <returns>List of group:value pairs.</returns>;
         /// </summary>
@@ -199,7 +199,7 @@ namespace XLua.TemplateEngine
         public static int Compile(RealStatePtr L)
         {
 			string snippet = LuaAPI.lua_tostring(L, 1);
-            
+
             string code;
             try
             {
@@ -237,13 +237,14 @@ namespace XLua.TemplateEngine
 
         public static void OpenLib(RealStatePtr L)
         {
-            LuaAPI.lua_newtable(L);
+            LuaAPI.lua_newtable(L); //创建新table
             LuaAPI.xlua_pushasciistring(L, "compile");
             LuaAPI.lua_pushstdcallcfunction(L, templateCompileFunction);
-            LuaAPI.lua_rawset(L, -3);
+            LuaAPI.lua_rawset(L, -3); //table[compile] = pointer(templateCompileFunc)
             LuaAPI.xlua_pushasciistring(L, "execute");
             LuaAPI.lua_pushstdcallcfunction(L, templateExecuteFunction);
-            LuaAPI.lua_rawset(L, -3);
+            LuaAPI.lua_rawset(L, -3); //table[execute] = pointer(templateExecuteFunc)
+            //将栈顶元素出栈，并将其作为全局变量“template”的值
             if (0 != LuaAPI.xlua_setglobal(L, "template"))
             {
                 throw new Exception("call xlua_setglobal fail!");

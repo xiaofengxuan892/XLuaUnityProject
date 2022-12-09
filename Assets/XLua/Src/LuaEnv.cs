@@ -80,18 +80,24 @@ namespace XLua
                 //创建lua堆栈
                 rawL = LuaAPI.luaL_newstate();
 
-                //初始化状态机中的xlua标准库
+                //初始化堆栈中的xlua标准库
                 LuaAPI.luaopen_xlua(rawL);
                 LuaAPI.luaopen_i64lib(rawL);
 
                 translator = new ObjectTranslator(this, rawL);
+                //为“LuaCSFunction”类型创建元表，并在注册表中设立键值对，同时在“typeIdMap”中存储该key，
+                //以便直接通过key获取到注册表中的元表值
                 translator.createFunctionMetatable(rawL);
                 translator.OpenLib(rawL);
+                //在“ObjectTranslatorPool”中将“translator”与使用的“rawL”绑定起来
+                //PS: 虽然名字是“xxxPool”，但实际只是个集合的作用，并没有循环利用的功能
                 ObjectTranslatorPool.Instance.Add(rawL, translator);
 
+                //设置lua错误处理函数：lua代码在执行异常时会调用该方法
                 LuaAPI.lua_atpanic(rawL, StaticLuaCallbacks.Panic);
 
 #if !XLUA_GENERAL
+                //设置lua日志输出函数print执行逻辑：StaticLuaCallbacks.Print，并绑定全局变量“print”
                 LuaAPI.lua_pushstdcallcfunction(rawL, StaticLuaCallbacks.Print);
                 if (0 != LuaAPI.xlua_setglobal(rawL, "print"))
                 {
@@ -100,7 +106,7 @@ namespace XLua
 #endif
 
                 //template engine lib register
-                TemplateEngine.LuaTemplate.OpenLib(rawL);
+                TemplateEngine.LuaTemplate.OpenLib(rawL);  //其实就是设置全局变量“template”，并添加“compile”和“execute”方法
 
                 AddSearcher(StaticLuaCallbacks.LoadBuiltinLib, 2); // just after the preload searcher
                 AddSearcher(StaticLuaCallbacks.LoadFromCustomLoaders, 3);
@@ -295,20 +301,27 @@ namespace XLua
             {
 #endif
                 var _L = L;
-                //insert the loader
-                LuaAPI.xlua_getloaders(_L);
+                /* TODO: 这个“loader”到底是什么？如果是table形式，那里面包含的元素具体是什么
+                 */
+                LuaAPI.xlua_getloaders(_L);  //大概使用的是默认loader(table形式)，并入栈
                 if (!LuaAPI.lua_istable(_L, -1))
                 {
                     throw new Exception("Can not set searcher!");
                 }
-                uint len = LuaAPI.xlua_objlen(_L, -1);
+                uint len = LuaAPI.xlua_objlen(_L, -1);  //获取栈顶loader中table元素个数
                 index = index < 0 ? (int)(len + index + 2) : index;
+                //不论如何遍历，栈顶元素必然是“loader”的table
                 for (int e = (int)len + 1; e > index; e--)
                 {
+                    //先获取“loader”的table中key为“e -1”的value，并将该value入栈
                     LuaAPI.xlua_rawgeti(_L, -1, e - 1);
-                    LuaAPI.xlua_rawseti(_L, -2, e);
+                    //由于有“table[e-1]”入栈，因此table的索引变为“-2”
+                    LuaAPI.xlua_rawseti(_L, -2, e); //table[e] = table[e -1]
                 }
+                //遍历结束后，栈顶元素依然是“loader”的table
+
                 LuaAPI.lua_pushstdcallcfunction(_L, searcher);
+                //由于有“LuaCSFunction”入栈，因此栈顶元素“loader”的table索引变为“-2”
                 LuaAPI.xlua_rawseti(_L, -2, index);
                 LuaAPI.lua_pop(_L, 1);
 #if THREAD_SAFE || HOTFIX_ENABLE

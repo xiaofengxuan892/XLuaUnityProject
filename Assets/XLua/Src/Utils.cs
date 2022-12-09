@@ -403,12 +403,15 @@ namespace XLua
 			int obj_field, int obj_getter, int obj_setter, int obj_meta, out LuaCSFunction item_getter, out LuaCSFunction item_setter, BindingFlags access)
 		{
 			ObjectTranslator translator = ObjectTranslatorPool.Instance.Find(L);
+			//默认在wrap时使用”BindingFlags.DeclaredOnly“只获取本type中声明的对象，其继承的父类对象则不会被反射获取
+			//否则获取到的对象就太多了
 			BindingFlags flag = BindingFlags.DeclaredOnly | BindingFlags.Instance | BindingFlags.Static | access;
 			FieldInfo[] fields = type.GetFields(flag);
 			EventInfo[] all_events = type.GetEvents(flag | BindingFlags.Public | BindingFlags.NonPublic);
 
             LuaAPI.lua_checkstack(L, 2);
 
+            //设置Type中的”Field“
             for (int i = 0; i < fields.Length; ++i)
 			{
 				FieldInfo field = fields[i];
@@ -423,14 +426,20 @@ namespace XLua
 					fieldName = "&" + fieldName;
 				}
 
+				//部分特殊参数，如：只可以在构造函数中赋值等，
+				//这样的filed比较简单，直接在”cls_field“的table中设置键值对即可
 				if (field.IsStatic && (field.IsInitOnly || field.IsLiteral))
 				{
 					LuaAPI.xlua_pushasciistring(L, fieldName);
 					translator.PushAny(L, field.GetValue(null));
-					LuaAPI.lua_rawset(L, cls_field);
+					LuaAPI.lua_rawset(L, cls_field); //由于是”static“，因此使用”cls_field“
 				}
 				else
 				{
+					//针对拥有Set,Get方法的属性，则需要生成对应的LuaCSFunction，
+					//并在总的”cls_getter“, "cls_setter"的table中为该”fileName“设置键值对
+					//并且对应的get,set封装成的LuaCSFunction，将其转换成指针来压入栈
+					//故最后”cls_getter“, "cls_setter"中的键值对是：fileName - pointer(LuaCSFunction)
 					LuaAPI.xlua_pushasciistring(L, fieldName);
 					translator.PushFixCSFunction(L, genFieldGetter(type, field));
 					LuaAPI.lua_rawset(L, field.IsStatic ? cls_getter : obj_getter);
@@ -441,6 +450,7 @@ namespace XLua
 				}
 			}
 
+            //设置Type中的”Event“
 			EventInfo[] events = type.GetEvents(flag);
 			for (int i = 0; i < events.Length; ++i)
 			{
@@ -448,43 +458,57 @@ namespace XLua
 				LuaAPI.xlua_pushasciistring(L, eventInfo.Name);
 				translator.PushFixCSFunction(L, translator.methodWrapsCache.GetEventWrap(type, eventInfo.Name));
 				bool is_static = (eventInfo.GetAddMethod(true) != null) ? eventInfo.GetAddMethod(true).IsStatic : eventInfo.GetRemoveMethod(true).IsStatic;
+				//如果是”static“类型，则使用”cls_field“，否则使用”obj_field“
 				LuaAPI.lua_rawset(L, is_static ? cls_field : obj_field);
 			}
 
+			//设置Type中的”PropertyInfo“
 			List<PropertyInfo> items = new List<PropertyInfo>();
 			PropertyInfo[] props = type.GetProperties(flag);
 			for (int i = 0; i < props.Length; ++i)
 			{
 				PropertyInfo prop = props[i];
+				//筛选出”IndexParameters“数量大于0的”PropertyInfo“
 				if (prop.GetIndexParameters().Length > 0)
 				{
 					items.Add(prop);
 				}
 			}
-
 			var item_array = items.ToArray();
 			item_getter = item_array.Length > 0 ? genItemGetter(type, item_array) : null;
 			item_setter = item_array.Length > 0 ? genItemSetter(type, item_array) : null;
+
+			//设置Type中的”Method“
 			MethodInfo[] methods = type.GetMethods(flag);
 			if (access == BindingFlags.NonPublic)
 			{
+				//这种情况的具体细节是怎样的？不明白
 				methods = type.GetMethods(flag | BindingFlags.Public).Join(methods, p => p.Name, q => q.Name, (p, q) => p).ToArray();
 			}
+			//"pending_methods"主要针对同名方法的重载，如拥有同名但参数个数或顺序不同的同名方法
+			//此时该方法由于参数个数或顺序不同导致其methodInfo是不同的，因此可以使用”List<MemberInfo>“来添加
+			//注意：Type中所有的filed, event, method等元素都是memberInfo，
+			//     根据不同的类型扩展出”FiledInfo“，”EventInfo“，”MemberInfo“等
 			Dictionary<MethodKey, List<MemberInfo>> pending_methods = new Dictionary<MethodKey, List<MemberInfo>>();
 			for (int i = 0; i < methods.Length; ++i)
 			{
 				MethodInfo method = methods[i];
 				string method_name = method.Name;
 
+				//自定义封装的结构”MethodKey“，包含methodName, 以及该method的static等特性，可根据需要再添加参数
 				MethodKey method_key = new MethodKey { Name = method_name, IsStatic = method.IsStatic };
+				//用于存储该”method_key“对应的所有方法，每个method_key至少有一个对应的methodInfo
 				List<MemberInfo> overloads;
+				//当该”method_key“已经在集合中时，则直接添加进该method_key的list列表即可
 				if (pending_methods.TryGetValue(method_key, out overloads))
 				{
+					//至少会包含一个该”method_key“的方法，如果有同名方法，因此methodInfo不同，因此可以直接添加
 					overloads.Add(method);
 					continue;
 				}
 
-				//indexer
+				//当”pending_methods“中没有该method_key时：
+				//部分特殊方法并不需要，因此排除掉
 				if (method.IsSpecialName && ((method.Name == "get_Item" && method.GetParameters().Length == 1) || (method.Name == "set_Item" && method.GetParameters().Length == 2)))
 				{
 					if (!method.GetParameters()[0].ParameterType.IsAssignableFrom(typeof(string)))
@@ -500,16 +524,22 @@ namespace XLua
 
 				if (method_name.StartsWith("op_") && method.IsSpecialName) // 操作符
 				{
+					/* TODO: 问题 **********
+					 * 描述：1.为什么会在Type的脚本中定义“op_add, op_sub, op_lessthan”等方法呢？
+					 *      2.“InternalGlobals.supportOp”将具体的methodInfo与元方法名称关联起来，后期是如何调用的呢？
+					 * 注意：这里的“Type”实际上是C#脚本类型，通过“type.GetMethods”等方法可知
+					 */
 					if (InternalGlobals.supportOp.ContainsKey(method_name))
 					{
 						if (overloads == null)
 						{
 							overloads = new List<MemberInfo>();
+							//加入该type的所有methodInfo的字典中
 							pending_methods.Add(method_key, overloads);
 						}
 						overloads.Add(method);
 					}
-					continue;
+					continue;    //如果是“操作符”方法，但不是“InternalGlobals”支持的方法则直接跳过
 				}
 				else if (method_name.StartsWith("get_") && method.IsSpecialName && method.GetParameters().Length != 1) // getter of property
 				{
@@ -854,9 +884,17 @@ namespace XLua
 
 			LuaAPI.lua_newtable(L);
 			int cls_field = LuaAPI.lua_gettop(L);
+			/********************* 重要1 **********************
+			 * 为该type在注册表的”CSHARP_NAMESPACE“ —— 整个项目所有type的命名空间表，设置该type专属键值对
+			 * 执行过程：1.由于”CSHARP_NAMESPACE“只有一个整个项目，负责管理所有type的命名空间路径
+			 *           因此将type按照其namespace及classname层层拆分，可以很方便的展示所有type之间的结构
+			 *         2.为了方便查询到该type直接的table，这里为每个type直接设立的键值对：
+			 *           CSHARP_NAMESPACE[type] = obj_meta
+			 *           因此可以直接可以通过type查找到其value值
+			 */
+			SetCSTable(L, type, cls_field);
+            //”SetCSTable“并不会改变栈中元素配置，故该方法执行完毕后栈顶元素依然是”cls_field“的空表
 
-            //set cls_field to namespace
-            SetCSTable(L, type, cls_field);
             //finish set cls_field to namespace
             LuaAPI.lua_newtable(L);
 			int cls_getter = LuaAPI.lua_gettop(L);
@@ -865,10 +903,13 @@ namespace XLua
 
             LuaCSFunction item_getter;
 			LuaCSFunction item_setter;
+			//针对该type中不同的field, setter, getter等分别设置键值对：filename - Pointer(指针)
+			//因此”SetCSTable“设置的”CSHARP_NAMESPACE“的table中，
+			//该type对应的"cls_field"就是一个包含该type完整filed信息的table了，而并非初始设置时的空table
 			makeReflectionWrap(L, type, cls_field, cls_getter, cls_setter, obj_field, obj_getter, obj_setter, obj_meta,
 				out item_getter, out item_setter, privateAccessible ? (BindingFlags.Public | BindingFlags.NonPublic) : BindingFlags.Public);
 
-			// init obj metatable
+			//为该type的所有实例对象设置元表，包含”__gc“，”__tostring“, "__index"元方法
 			LuaAPI.xlua_pushasciistring(L, "__gc");
 			LuaAPI.lua_pushstdcallcfunction(L, translator.metaFunctions.GcMeta);
 			LuaAPI.lua_rawset(L, obj_meta);
@@ -878,8 +919,9 @@ namespace XLua
 			LuaAPI.lua_rawset(L, obj_meta);
 
 			LuaAPI.xlua_pushasciistring(L, "__index");
-			LuaAPI.lua_pushvalue(L, obj_field);
-			LuaAPI.lua_pushvalue(L, obj_getter);
+			LuaAPI.lua_pushvalue(L, obj_field);  //拷贝”obj_field“的table副本，并入栈
+			LuaAPI.lua_pushvalue(L, obj_getter); //拷贝”obj_getter“的table副本，并入栈
+			//为该LuaCSFunction创建指针并入栈，同时会通过”fix_cs_function“列表记录所有入栈的LuaCSFunction
 			translator.PushFixCSFunction(L, item_getter);
 			translator.PushAny(L, type.BaseType());
 			LuaAPI.xlua_pushasciistring(L, LuaIndexsFieldName);
@@ -1176,6 +1218,7 @@ namespace XLua
 #else
 		public static void RegisterFunc(RealStatePtr L, int idx, string name, LuaCSFunction func)
 		{
+			//在“RegisterFunc”时以当前栈L中的配置为基础，在此基础上计算
 			idx = abs_idx(LuaAPI.lua_gettop(L), idx);
 			LuaAPI.xlua_pushasciistring(L, name);
 			LuaAPI.lua_pushstdcallcfunction(L, func);
@@ -1430,10 +1473,8 @@ namespace XLua
 
 			//由于遍历条件限制“i < path.Count -1”，因此遍历结束后栈顶存放的是classname的上一次命名空间的LUA_TTABLE值
 			LuaAPI.xlua_pushasciistring(L, path[path.Count - 1]);  //将classname作为key入栈
-			LuaAPI.lua_pushvalue(L, cls_table);
-			//在classname的直接父类的table中设置键值对，但注意：此时设置的value是栈L中的索引，而非直接的table
-			//所以如果需要获取该classname的value值，则需要通过“lua_pushvalue(L, index)”压副本入栈顶
-			//移除时则通过“lua_remove(L, index)”
+			LuaAPI.lua_pushvalue(L, cls_table);  //将“cls_table”索引处的值拷贝副本并入栈
+			//在classname的直接父类的table中设置键值对，但注意：
 			LuaAPI.lua_rawset(L, -3);
 			//移除唯一剩下的命名空间table，此时栈恢复初始配置。至此该type在“CSHARP_NAMESPACE”表格中的的路径配置结束
 			LuaAPI.lua_pop(L, 1);
@@ -1441,11 +1482,21 @@ namespace XLua
 			//重新将注册表中“CSHARP_NAMESPACE”对应的value表入栈
             LuaAPI.xlua_pushasciistring(L, LuaEnv.CSHARP_NAMESPACE);
             LuaAPI.lua_rawget(L, LuaIndexes.LUA_REGISTRYINDEX);
-
+            //将type对象根据不同的类型进行相应的转换后，将转换后的数值压入栈中，后续作为key使用
             ObjectTranslatorPool.Instance.Find(L).PushAny(L, type);
-			LuaAPI.lua_pushvalue(L, cls_table);
+			LuaAPI.lua_pushvalue(L, cls_table);   //将“cls_table”索引处的值(本质上是一个table)做副本并压入栈
 			LuaAPI.lua_rawset(L, -3);
-			LuaAPI.lua_pop(L, 1);
+
+			/********** START: 问题 *************
+			 * 描述：遍历完全结束后，“CSHARP_NAMESPACE”的table中已经存在任意type的完整路径，包含该type最终的table
+			 *      那么为什么又要重新使用“PushAny”将该type入栈，再次在”CSHARP_NAMESPACE“的table中设置
+			 *      该type的直接路径：CSHARP_NAMESPACE[type] = "cls_table"的table
+			 *      如果这样的做是为了方便直接在CSHARP_NAMESPACE的table中查找该type的table(好处在于有该type的直接key)
+			 *      那么使用遍历的原因又是什么？为什么要通过遍历得到所有类型的路径配置表后(所有type共享)
+			 *      又额外生成该type的直接键值对？
+			 ********** END: 问题 *************/
+
+			LuaAPI.lua_pop(L, 1);  //将”CSHARP_NAMESPACE“配置表出栈，恢复栈初始配置
 		}
 
 		public const string LuaIndexsFieldName = "LuaIndexs";
