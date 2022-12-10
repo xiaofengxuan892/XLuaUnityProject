@@ -114,6 +114,9 @@ namespace XLua
                 AddSearcher(StaticLuaCallbacks.LoadFromResource, 4);
                 AddSearcher(StaticLuaCallbacks.LoadFromStreamingAssetsPath, -1);
 #endif
+                /*********** 核心模块 ***********
+                 * 作用：正式启动lua相关功能
+                 */
                 DoString(init_xlua, "Init");
                 init_xlua = null;
 
@@ -301,8 +304,9 @@ namespace XLua
             {
 #endif
                 var _L = L;
-                /* TODO: 这个“loader”到底是什么？如果是table形式，那里面包含的元素具体是什么
-                 */
+                //"loader"中依次防止多个加载器需要的方法(LuaCSFunction)
+                //如：“LoadBuiltinLib”, "LoadFromCustomLoaders", "LoadFromResource", "LoadFromStreamingAssetsPath"等
+                //PS：由于代码最终是在Lua中运行，因此这里使用Table格式存储，但通过指针的形式将“LuaCSFunction”进行绑定
                 LuaAPI.xlua_getloaders(_L);  //大概使用的是默认loader(table形式)，并入栈
                 if (!LuaAPI.lua_istable(_L, -1))
                 {
@@ -316,14 +320,14 @@ namespace XLua
                     //先获取“loader”的table中key为“e -1”的value，并将该value入栈
                     LuaAPI.xlua_rawgeti(_L, -1, e - 1);
                     //由于有“table[e-1]”入栈，因此table的索引变为“-2”
-                    LuaAPI.xlua_rawseti(_L, -2, e); //table[e] = table[e -1]
+                    LuaAPI.xlua_rawseti(_L, -2, e); //table[e] = table[e-1]
                 }
                 //遍历结束后，栈顶元素依然是“loader”的table
 
                 LuaAPI.lua_pushstdcallcfunction(_L, searcher);
                 //由于有“LuaCSFunction”入栈，因此栈顶元素“loader”的table索引变为“-2”
-                LuaAPI.xlua_rawseti(_L, -2, index);
-                LuaAPI.lua_pop(_L, 1);
+                LuaAPI.xlua_rawseti(_L, -2, index); //table[index] = pointer(searcherFunc)
+                LuaAPI.lua_pop(_L, 1);  //栈顶元素table出栈，恢复栈初始配置
 #if THREAD_SAFE || HOTFIX_ENABLE
             }
 #endif
@@ -474,15 +478,15 @@ namespace XLua
         }
 
         private string init_xlua = @" 
-            local metatable = {}
-            local rawget = rawget
-            local setmetatable = setmetatable
-            local import_type = xlua.import_type
+            local metatable = {}    -- 只是一个普通的table，这里依据其特殊作用，故命名为“metatable”
+            local rawget = rawget   -- 全局变量“rawget”
+            local setmetatable = setmetatable       -- 全局变量“setmetatable”
+            local import_type = xlua.import_type    -- 全局变量“xlua”中的元素，key为：import_type
             local import_generic_type = xlua.import_generic_type
             local load_assembly = xlua.load_assembly
 
             function metatable:__index(key) 
-                local fqn = rawget(self,'.fqn')
+                local fqn = rawget(self,'.fqn')   -- 获取metatable中key为”.fqn“的元素值
                 fqn = ((fqn and fqn .. '.') or '') .. key
 
                 local obj = import_type(fqn)

@@ -1319,6 +1319,7 @@ namespace XLua
             }
         }
 
+        //总的思想就是：将csobject压入栈前需要检测该对象是否当前已在内存中，否则需要重新压入
         public void Push(RealStatePtr L, object o)
         {
             if (o == null)
@@ -1339,6 +1340,7 @@ namespace XLua
             bool needcache = !is_valuetype || is_enum;   //只有引用类型以及值类型中的“枚举”需要设置缓存
             if (needcache && (is_enum ? enumMap.TryGetValue(o, out index) : reverseMap.TryGetValue(o, out index)))
             {
+                //在统一管理入栈的csobj集合“cacheRef”中查询该index的obj是否已入栈，如果已入栈，则返回“1”
                 if (LuaAPI.xlua_tryget_cachedud(L, index, cacheRef) == 1)
                 {
                     return;
@@ -1348,6 +1350,7 @@ namespace XLua
             }
 
             bool is_first;   //这个“is_first”指代的是是否初次往“typeIdMap”中添加该type
+            //获取该object类型元表在注册表中的key
             int type_id = getTypeId(L, type, out is_first);
 
             //如果一个type的定义含本身静态readonly实例时，getTypeId会push一个实例，这时候应该用这个实例
@@ -1414,6 +1417,7 @@ namespace XLua
             {
                 if (LuaAPI.lua_type(L, index) != LuaTypes.LUA_TUSERDATA) return null;
 
+                //这里的“GetTypeOf”获取到的type与上面的“lua_type”是完全不同的
                 Type type = GetTypeOf(L, index);
                 if (type == typeof(decimal))
                 {
