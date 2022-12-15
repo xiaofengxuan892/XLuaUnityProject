@@ -28,6 +28,8 @@ namespace Tutorial
                 }
                 return null;
             });
+
+            //Lua代码中的“require”会自动触发“loader”
             luaenv.DoString("print('InMemory.ccc=', require('InMemory').ccc)");
         }
 

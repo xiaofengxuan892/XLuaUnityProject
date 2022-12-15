@@ -1,5 +1,7 @@
 using System.Collections;
 using System.Collections.Generic;
+using System.IO;
+using System.Net;
 using DetailComment;
 using UnityEngine;
 
@@ -8,12 +10,24 @@ public class CustomTest : MonoBehaviour
     void Start() {
         //TestTypeDetails();
 
-        int a = 100, b = 100;
-        Debug.LogFormat("a, b比较结果：{0}", ReferenceEquals(a, b));
-        string c = "hello", d = "hello";
-        Debug.LogFormat("c, d比较结果：{0}", ReferenceEquals(c, d));
+        /*string a = "abc";
+        Debug.LogFormat("index: {0}", a.IndexOf('['));*/
+
+        //LoadLuaFile();
+
     }
 
+    //加载Lua文件的方式
+    void LoadLuaFile() {
+        /* Resources.Load无法加载“xxx.lua”文件
+        string filename = "a";
+        var textAsset =  Resources.Load(filename) as TextAsset;
+        Debug.LogFormat("content: {0}", textAsset.text);*/
+
+        var path = Application.dataPath + "/Resources/a.lua";
+        var content = File.ReadAllText(path);
+        Debug.LogFormat("content: {0}", content);
+    }
     //测试Type中的诸多特性
     void TestTypeDetails() {
         Src01 temp = new Src01();

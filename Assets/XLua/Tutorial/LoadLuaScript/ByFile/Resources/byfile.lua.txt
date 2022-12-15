@@ -1,1 +1,3 @@
+require 'UI.Test'
+
 print('hello world')

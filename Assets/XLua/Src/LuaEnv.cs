@@ -15,6 +15,9 @@ using LuaAPI = XLua.LuaDLL.Lua;
 using RealStatePtr = System.IntPtr;
 using LuaCSFunction = XLua.LuaDLL.lua_CSFunction;
 #endif
+using System.IO;
+using System.Text;
+using UnityEngine;
 
 
 namespace XLua
@@ -81,8 +84,8 @@ namespace XLua
                 rawL = LuaAPI.luaL_newstate();
 
                 //初始化堆栈中的xlua标准库
-                LuaAPI.luaopen_xlua(rawL);
-                LuaAPI.luaopen_i64lib(rawL);
+                LuaAPI.luaopen_xlua(rawL);    //设置全局变量“xlua”的值(table形式，包含xlualib数组中的所有方法，在“xlua.c”文件中)
+                LuaAPI.luaopen_i64lib(rawL);  //设置全局变量“uint64”的值(table形式，包含各种操作符元方法 —— 在“i64lib.c”文件中)
 
                 translator = new ObjectTranslator(this, rawL);
                 //为“LuaCSFunction”类型创建元表，并在注册表中设立键值对，同时在“typeIdMap”中存储该key，
@@ -135,7 +138,7 @@ namespace XLua
                 LuaAPI.xlua_pushasciistring(rawL, Utils.LuaIndexsFieldName);
                 LuaAPI.lua_newtable(rawL);
                 LuaAPI.lua_pushvalue(rawL, -3);
-                LuaAPI.lua_setmetatable(rawL, -2);
+                LuaAPI.lua_setmetatable(rawL, -2);   //将包含“__index”的table设置成此空表的元表
                 LuaAPI.lua_rawset(rawL, LuaIndexes.LUA_REGISTRYINDEX);
 
                 LuaAPI.xlua_pushasciistring(rawL, Utils.LuaNewIndexsFieldName);
@@ -193,7 +196,33 @@ namespace XLua
                 translator.CreateArrayMetatable(rawL);
                 translator.CreateDelegateMetatable(rawL);
                 translator.CreateEnumerablePairs(rawL);
+
+                //************ START: 自定义Lua文件的load方法 ***********
+                //为了方便自由加载Lua脚本，这里创建“CustomLoader”
+                CustomLoader loadLuaFiles = LoadCustomLuaFiles;
+                AddLoader(loadLuaFiles);
+                //************ END: 自定义Lua文件的load方法 ***********
             }
+        }
+
+        //自定义的加载Lua文件的方法，
+        //注意：这里传入的参数是文件名，而非该文件的完整路径(该参数由Lua代码中的“require ‘xxx’”决定)
+        private byte[] LoadCustomLuaFiles(ref string filename) {
+            if (string.IsNullOrEmpty(filename)) {
+                return null;
+            }
+
+            //由于Lua中不方便使用“/”，故这里将代码中的“.”转换成“/”再使用
+            var file = filename.Replace('.', '/') + ".lua";
+            var path = Application.dataPath + "/XLua/Game/" + file;
+            if (!File.Exists(path)) {
+                return null;
+            }
+
+            //注意：这里不能直接返回“File.ReadAllBytes”读取到的byte[]，在执行Lua代码块时会报错
+            var content = File.ReadAllText(path);
+            //所有的Lua文件默认使用“UTF8”编码，解析byte[]时也使用UTF8解码以获取chunk代码块
+            return Encoding.UTF8.GetBytes(content);
         }
 
         private static List<Action<LuaEnv, ObjectTranslator>> initers = null;
@@ -270,14 +299,16 @@ namespace XLua
                 {
                     if (env != null)
                     {
-                        env.push(_L);
+                        env.push(_L);   //根据该env的luaReference将其值入栈，此时栈顶元素为“运行环境”
+                        //此时“chunk”在栈中索引为“-2”，这里将栈顶的“运行环境”设置为本“chunk”的运行环境
                         LuaAPI.lua_setfenv(_L, -2);
                     }
 
+                    //这里执行的是纯Lua函数，因此无需参数；只有在调用“LuaCSFunction”时才考虑参数个数
                     if (LuaAPI.lua_pcall(_L, 0, -1, errFunc) == 0)
                     {
                         LuaAPI.lua_remove(_L, errFunc);
-                        return translator.popValues(_L, oldTop);
+                        return translator.popValues(_L, oldTop); //执行成功后将返回值弹出，并恢复栈初始配置
                     }
                     else
                         ThrowExceptionFromError(oldTop);
@@ -367,6 +398,7 @@ namespace XLua
                     }
                 }
 #if !XLUA_GENERAL
+                //管理非正常流程被释放的“ObjectPool”数组集合中的元素：如object被“GameObject.Destroy”等销毁
                 last_check_point = translator.objects.Check(last_check_point, max_check_per_tick, object_valid_checker, translator.reverseMap);
 #endif
 #if THREAD_SAFE || HOTFIX_ENABLE
@@ -619,6 +651,7 @@ namespace XLua
         //                        返回值：如果返回null，代表加载该源下无合适的文件，否则返回UTF8编码的byte[]
         public void AddLoader(CustomLoader loader)
         {
+            //所有的“CustomLoader”都有一个参数“filepath”，因此在调用C#方法时，传过来的第一个参数必然也是filepath
             customLoaders.Add(loader);
         }
 

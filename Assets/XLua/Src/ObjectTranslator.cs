@@ -283,15 +283,14 @@ namespace XLua
             LuaAPI.xlua_pushasciistring(L, "__mode");
             LuaAPI.xlua_pushasciistring(L, "v");
             LuaAPI.lua_rawset(L, -3);  //该句执行完毕后：table2[__mode] = v,
-            //此时栈中元素顺序：-1 —— table1, -2 —— table2
+            //此时栈中元素顺序：-1 —— table2, -2 —— table1
 
-            //该句执行逻辑：将当前栈顶元素table1出栈，并作为参数“-2”索引处的元素的元表
-            //相当于lua语言里的“setmetatable(table2, table1)”
-            LuaAPI.lua_setmetatable(L, -2);  //执行结束后，栈顶元素为table2
-            //将栈顶元素table2出栈，并在注册表中为“table2”生成key，并返回该key数值
+            //将栈顶元素table2出栈，作为table1的元表
+            LuaAPI.lua_setmetatable(L, -2);  //执行结束后，栈顶元素为table1
+            //将栈顶元素table1出栈，并在注册表中为“table1”生成key，并返回该key数值
             cacheRef = LuaAPI.luaL_ref(L, LuaIndexes.LUA_REGISTRYINDEX);
             //执行结束后，栈L恢复初始配置顺序。
-            //并且注册表中包含键值对：RegistryTable[cacheRef] = table2, 且table2的元表为table1(空表)
+            //并且注册表中包含键值对：RegistryTable[cacheRef] = table1, 且table1的元表为table2 = {__mode = v}
 
             initCSharpCallLua();   //针对特殊平台或环境需要初始化相关配置，其他情况则无需处理
         }
@@ -782,6 +781,9 @@ namespace XLua
 
 		internal Type FindType(string className, bool isQualifiedName = false)
 		{
+            //在构造方法中初始化的“assemblies”中查找该“classname”类型
+            //有些type是程序集中自带的，比如常用的“UnityEngine.UI"中的各种UI组件
+            //从以下执行逻辑来看，所有的“classname”必然存在于某些某些assembly中，包括新建的C#脚本
             foreach (Assembly assembly in assemblies)
 			{
                 Type klass = assembly.GetType(className);
@@ -1154,8 +1156,12 @@ namespace XLua
                     type_id = LuaAPI.luaL_ref(L, LuaIndexes.LUA_REGISTRYINDEX);
 
                     LuaAPI.lua_pushnumber(L, type_id);
+                    /******** 核心 **********
+                     * 为什么每次压入LuaCSFunction时使用的index都是“1”？
+                     * 每个类型元表中key为1的数值代表的是其在注册表中的key
+                     */
                     LuaAPI.xlua_rawseti(L, -2, 1);
-                    LuaAPI.lua_pop(L, 1);
+                    LuaAPI.lua_pop(L, 1);  //类型元表出栈，栈恢复初始配置
 
                     if (type.IsValueType())
                     {
@@ -1340,11 +1346,20 @@ namespace XLua
             bool needcache = !is_valuetype || is_enum;   //只有引用类型以及值类型中的“枚举”需要设置缓存
             if (needcache && (is_enum ? enumMap.TryGetValue(o, out index) : reverseMap.TryGetValue(o, out index)))
             {
-                //在统一管理入栈的csobj集合“cacheRef”中查询该index的obj是否已入栈，如果已入栈，则返回“1”
+                //index指代该obj的唯一id，将缓存表”cacheRef“该id的值userdata入栈，并返回1；如果该userdata为nil，则返回0
+                //从“xlua_tryget_cachedud”的C语言方法体可知：当userdata非空时，此时栈顶存放的是Object的userdata
                 if (LuaAPI.xlua_tryget_cachedud(L, index, cacheRef) == 1)
                 {
                     return;
                 }
+
+                //当userdata为nil时，“xlua_tryget_cachedud”方法体会将该nil出栈，因此栈没有任何变化，和之前一样
+                //TODO:
+                //1.此时“cacheRef”会自动删除userdata为nil的键值对吗？该userdata的GC调用到底是在此时还是栈L中元素遍历时即调用？
+                //2.在遍历栈L中元素时清空没有引用的元素时到底是否会其GC方法，还是一定要等到再次使用该userdata如“xlua_tryget_cachedud”
+                //发现该userdata为nil时再调用其GC方法？
+                //3.是否真的有“自动检测栈中元素引用为空时自动回收的机制”？
+
                 //这里实在太经典了，weaktable先删除，然后GC会延迟调用，当index会循环利用的时候，不注释这行将会导致重复释放
                 //collectObject(index);
             }

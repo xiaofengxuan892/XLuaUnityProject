@@ -1385,7 +1385,7 @@ namespace XLua
             LuaAPI.xlua_pushasciistring(L, LuaEnv.CSHARP_NAMESPACE);
             LuaAPI.lua_rawget(L, LuaIndexes.LUA_REGISTRYINDEX);
 
-            //获取该type的代码路径(部分类型，如nestedType本身并没有物理存放路径，所以这里只使用代码路径)
+            //获取该type的代码逻辑路径(部分类型，如nestedType本身并没有物理存放路径，所以这里只使用代码逻辑路径)
             List<string> path = getPathOfType(type);
 
 			for (int i = 0; i < path.Count; ++i)
@@ -1393,16 +1393,23 @@ namespace XLua
 				LuaAPI.xlua_pushasciistring(L, path[i]);
 				if (0 != LuaAPI.xlua_pgettable(L, -2))
 				{
-					LuaAPI.lua_settop(L, oldTop);
-					LuaAPI.lua_pushnil(L);
+					//通过查询“xlua.dll”中“xlua_pgettable”的实现可知：其本质是执行“pcall”方法
+					//“lua_pcall”的返回值为0时代表执行成功，反之则执行异常
+					LuaAPI.lua_settop(L, oldTop);  //将异常信息全部移除，恢复栈初始配置
+					LuaAPI.lua_pushnil(L);  //压入nil值，方便“LoadCSTable”方法后续的判断
 					return;
 				}
+
+				//根据“SetCSTable”中的结构设置，“type”的每个父级都是table形式，
+				//最后的“classname”才是直接直接栈中索引(该值不是table，而是直接的索引int类型)
 				if (!LuaAPI.lua_istable(L, -1) && i < path.Count - 1)
 				{
 					LuaAPI.lua_settop(L, oldTop);
 					LuaAPI.lua_pushnil(L);
 					return;
 				}
+
+				//每执行一次遍历，都会将“path[i]”出栈，保留“path[i]”的value值
 				LuaAPI.lua_remove(L, -2);
 			}
 		}

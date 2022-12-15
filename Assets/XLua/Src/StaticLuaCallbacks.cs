@@ -162,8 +162,12 @@ namespace XLua
             try
             {
                 int udata = LuaAPI.xlua_tocsobj_safe(L, 1);
+                //该”udata“指代的是”ObjectPool“的数组集合中为每个新”Add“的元素赋予的数组index
+                //而”index“的取值范围必然是”0 - (count -1)“，
+                //因此使用”-1“作为条件判断即可明确知道是否需要去”ObjectPool“的数组集合中查询该index对应的obj
                 if (udata != -1)
                 {
+                    //根据”rawL“找到对应绑定的”translator“
                     ObjectTranslator translator = ObjectTranslatorPool.Instance.Find(L);
                     if ( translator != null )
                     {
@@ -789,12 +793,23 @@ namespace XLua
                     {
                         if (LuaAPI.xluaL_loadbuffer(L, bytes, bytes.Length, "@" + real_file_path) != 0)
                         {
+                            //当出现“luaL_error”时会直接打断Lua线程，后续代码不会再执行。这就是不使用“lua_pushstring”的原因
                             return LuaAPI.luaL_error(L, String.Format("error loading module {0} from CustomLoader, {1}",
                                 LuaAPI.lua_tostring(L, 1), LuaAPI.lua_tostring(L, -1)));
                         }
+
+                        //在所有customLoaders中只要有一个满足条件，则把C#方法执行的结果返回，通常都是加载某个Lua文件，读取得到string，
+                        //然后将string转换成byte[]数组；
+                        //之后使用“lua_loadbuffer”将该lua代码转换成chunk函数放入栈中，
+                        //不论“lua_loadbuffer”执行是否正常，都直接结束“LoadFromCustomLoaders”方法
+                        //当“lua_loadbuffer”执行正常时则栈顶为chunk代码块；当执行异常时，栈顶为错误信息
                         return 1;
                     }
                 }
+
+                //当customLoaders中所有loader都无法加载到目标文件时，则将以下string压入栈顶
+                //当使用“lua_pushstring”时则不会打断Lua线程，继续执行后续逻辑
+                //由于这只是代表使用“customLoaders”的方式没有加载到正确的文件，故继续使用其他“Searcher”方式查找该文件
                 LuaAPI.lua_pushstring(L, string.Format(
                     "\n\tno such file '{0}' in CustomLoaders!", filename));
                 return 1;
@@ -856,6 +871,8 @@ namespace XLua
                 Type type = translator.FindType(className);
                 if (type != null)
                 {
+                    //绝大多数情况，“getTyepId”的返回值必然">= 0"，
+                    //只有在“common_array_meta”，“common_delegate_meta”初始化失败时才会"< 0"
                     if (translator.GetTypeId(L, type) >= 0)
                     {
                         LuaAPI.lua_pushboolean(L, true);

@@ -38,6 +38,11 @@ namespace XLua
             luaEnv = luaenv;
         }
 
+        /*********** 重要：Lua堆栈中对象回收机制
+         * 分成两种情况：
+         * 1.对象长时间未被引用或者直接将该对象设置为nil，此时是延后
+         *
+         */
         ~LuaBase()
         {
             Dispose(false);
