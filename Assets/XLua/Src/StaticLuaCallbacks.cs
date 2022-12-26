@@ -82,7 +82,7 @@ namespace XLua
             }
             catch (Exception e)
             {
-                return LuaAPI.luaL_error(L, "c# exception in Enum BitwiseOr:" + e);
+               return LuaAPI.luaL_error(L, "c# exception in Enum BitwiseOr:" + e);
             }
         }
 
@@ -101,8 +101,8 @@ namespace XLua
             }
         }
 
-        [MonoPInvokeCallback(typeof(LuaCSFunction))]
-        static int FixCSFunction(RealStatePtr L)
+       [MonoPInvokeCallback(typeof(LuaCSFunction))]
+       static int FixCSFunction(RealStatePtr L)
         {
             try
             {

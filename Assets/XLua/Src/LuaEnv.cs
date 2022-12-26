@@ -183,6 +183,8 @@ namespace XLua
                 translator.Get(rawL, -1, out _G);
                 LuaAPI.lua_pop(rawL, 1);
 
+                //根据“xlua.c”文件中对“get_error_func_ref”执行逻辑可知：
+                //这里是将“error_func”函数作为闭包压入栈中作为新的“栈顶元素”，然后使用“lua_ref”在注册表中为其生成key
                 errorFuncRef = LuaAPI.get_error_func_ref(rawL);
 
                 if (initers != null)
@@ -236,6 +238,7 @@ namespace XLua
             initers.Add(initer);
         }
 
+        //存储lua脚本运行中所有的全局变量
         public LuaTable Global
         {
             get
@@ -422,6 +425,7 @@ namespace XLua
                 int oldTop = LuaAPI.lua_gettop(_L);
 
                 LuaAPI.lua_newtable(_L);
+                //将新入栈的空table转换成LuaTable返回给C#使用
                 LuaTable returnVal = (LuaTable)translator.GetObject(_L, -1, typeof(LuaTable));
 
                 LuaAPI.lua_settop(_L, oldTop);
@@ -459,12 +463,13 @@ namespace XLua
                     throw new InvalidOperationException("try to dispose a LuaEnv with C# callback!");
                 }
 
+                //移除字典集合“translators”中该“L”元素
                 ObjectTranslatorPool.Instance.Remove(L);
 
-                LuaAPI.lua_close(L);
+                LuaAPI.lua_close(L);   //关闭该状态机以释放内存
                 translator = null;
 
-                rawL = IntPtr.Zero;
+                rawL = IntPtr.Zero;    //为什么“lua_close、Remove”中使用的是“L”，这里又故弄玄虚的使用“rawL”？
 
                 disposed = true;
 #if THREAD_SAFE || HOTFIX_ENABLE

@@ -850,13 +850,14 @@ namespace XLua
 			}
 		}
 
+		//“动态反射”通用方法
 		public static void ReflectionWrap(RealStatePtr L, Type type, bool privateAccessible)
 		{
             LuaAPI.lua_checkstack(L, 20);
 
             int top_enter = LuaAPI.lua_gettop(L);
 			ObjectTranslator translator = ObjectTranslatorPool.Instance.Find(L);
-			//获取注册表中该type对应的数值，即一个普通的table，但由于该table的特殊用途，这里当作“元表”来处理
+			//这里其实重复了，总之就是为该type生成空元表并入栈，注册表中生成键值对
 			LuaAPI.luaL_getmetatable(L, type.FullName);  //注意：即使没有，也会压nil入栈
 			if (LuaAPI.lua_isnil(L, -1))
 			{
@@ -1026,6 +1027,7 @@ namespace XLua
 			if (type == null)
 			{
 				if (type_id == -1) throw new Exception("Fatal: must provide a type of type_id");
+				//"type_id"默认都是通过“lua_ref”自动生成，理论上不可能为“-1”.所以只要传递过来“type_id”则必然可以将其table入栈
 				LuaAPI.xlua_rawgeti(L, LuaIndexes.LUA_REGISTRYINDEX, type_id);
 			}
 			else
@@ -1041,6 +1043,8 @@ namespace XLua
 			LuaAPI.lua_pushnumber(L, 1);
 			LuaAPI.lua_rawset(L, -3);
 
+			//这里的判断条件“HasCustomOp”和“typeof(decimal)”，如果是通过“动态反射”或者“xxxWrap”方法执行到这里，
+			//那可以肯定是不需要判断这两个条件的
 			if ((type == null || !translator.HasCustomOp(type)) && type != typeof(decimal))
 			{
 				LuaAPI.xlua_pushasciistring(L, "__gc");
@@ -1122,10 +1126,14 @@ namespace XLua
 #endif
 			}
 
+			//将其父类入栈
 			translator.Push(L, type == null ? base_type : type.BaseType());
 
+			//将“LuaIndexes”的空table入栈，
+			//该table有元表，元表中元素：key-__index, value: StaticLuaCallbacks.MetaFuncIndex
 			LuaAPI.xlua_pushasciistring(L, LuaIndexsFieldName);
 			LuaAPI.lua_rawget(L, LuaIndexes.LUA_REGISTRYINDEX);
+
 			if (arrayIndexer == null)
 			{
 				LuaAPI.lua_pushnil(L);
@@ -1139,6 +1147,8 @@ namespace XLua
 #endif
 			}
 
+			//执行“gen_obj_indexer”后会将之前入栈的6个参数都出栈，加上“gen_obj_indexer”的C方法内部本身包含的“pushnil”
+			//共7个参数。执行“gen_obj_indexer”完毕后，此时栈顶元素为闭包函数(包含7个参数)，索引“-2”则为“__index”
 			LuaAPI.gen_obj_indexer(L);
 
 			if (type != null)
@@ -1146,12 +1156,14 @@ namespace XLua
 				LuaAPI.xlua_pushasciistring(L, LuaIndexsFieldName);
 				LuaAPI.lua_rawget(L, LuaIndexes.LUA_REGISTRYINDEX);//store in lua indexs function tables
 				translator.Push(L, type);
-				LuaAPI.lua_pushvalue(L, -3);
-				LuaAPI.lua_rawset(L, -3);
-				LuaAPI.lua_pop(L, 1);
+				LuaAPI.lua_pushvalue(L, -3); //将闭包函数的副本入栈
+				LuaAPI.lua_rawset(L, -3); //在“LuaIndexes”的table中设置“type - 闭包函数”键值对
+				LuaAPI.lua_pop(L, 1); //将栈顶的“LuaIndexes”的table出栈
 			}
 
-			LuaAPI.lua_rawset(L, meta_idx);
+			//此时栈顶为闭包函数，然后是“__index”
+			LuaAPI.lua_rawset(L, meta_idx);  //在obj_metatable中设置“__index - 闭包函数”键值对
+			//执行完毕后，栈恢复初始配置，没有任何新增的元素
 			//end index gen
 
 			//begin newindex gen
@@ -1201,8 +1213,11 @@ namespace XLua
 				LuaAPI.lua_pop(L, 1);
 			}
 
-			LuaAPI.lua_rawset(L, meta_idx);
+			//obj_metatable中新增”__newindex - 闭包newindexer函数“
+			LuaAPI.lua_rawset(L, meta_idx);  //执行完毕后，栈恢复初始配置
 			//end new index gen
+
+			//这里出栈的是”OBJ_META_IDX“, "METHOD_IDX", "GETTER_IDX", "SETTER_IDX"四个table
 			LuaAPI.lua_pop(L, 4);
 		}
 
@@ -1261,10 +1276,12 @@ namespace XLua
 
 			LuaAPI.xlua_pushasciistring(L, "UnderlyingSystemType");
 			translator.PushAny(L, type);
-			LuaAPI.lua_rawset(L, -3);
+			LuaAPI.lua_rawset(L, -3); //table[UnderlyingSystemType] = type
 
 			int cls_table = LuaAPI.lua_gettop(L);
 
+			//完善“CSHARP_NAMESPACE”的table中的元素，将该type添加到总的table集合中
+			//同时也是查找该type的class表的唯一方式：通过“CSHARP_NAMESPACE”查找到class表
 			SetCSTable(L, type, cls_table);
 
 			LuaAPI.lua_createtable(L, 0, 3);
@@ -1297,6 +1314,7 @@ namespace XLua
 			{
 				LuaAPI.lua_createtable(L, 0, static_setter_count);
 			}
+
 			LuaAPI.lua_pushvalue(L, meta_table);
 			LuaAPI.lua_setmetatable(L, cls_table);
 		}
@@ -1310,9 +1328,9 @@ namespace XLua
 		{
 			int top = LuaAPI.lua_gettop(L);
 			int cls_idx = abs_idx(top, CLS_IDX);
+			int cls_meta_idx = abs_idx(top, CLS_META_IDX);
 			int cls_getter_idx = abs_idx(top, CLS_GETTER_IDX);
 			int cls_setter_idx = abs_idx(top, CLS_SETTER_IDX);
-			int cls_meta_idx = abs_idx(top, CLS_META_IDX);
 
 			//begin cls index
 			LuaAPI.xlua_pushasciistring(L, "__index");
@@ -1321,13 +1339,15 @@ namespace XLua
 			translator.Push(L, type.BaseType());
 			LuaAPI.xlua_pushasciistring(L, LuaClassIndexsFieldName);
 			LuaAPI.lua_rawget(L, LuaIndexes.LUA_REGISTRYINDEX);
-			LuaAPI.gen_cls_indexer(L);
+			LuaAPI.gen_cls_indexer(L);  //生成闭包函数，包含5个参数(这里入栈4个参数，“xlua.c”中入栈一个参数)
+			//执行“gen_cls_indexer”完毕后，栈顶为闭包函数(所有入栈参数都出栈)。索引“-2”为元素“__index”
 
+			//在“LuaClassIndexs”的table中增加此type配置，与本方法逻辑不影响
 			LuaAPI.xlua_pushasciistring(L, LuaClassIndexsFieldName);
 			LuaAPI.lua_rawget(L, LuaIndexes.LUA_REGISTRYINDEX);//store in lua indexs function tables
 			translator.Push(L, type);
-			LuaAPI.lua_pushvalue(L, -3);
-			LuaAPI.lua_rawset(L, -3);
+			LuaAPI.lua_pushvalue(L, -3); //将闭包函数副本入栈
+			LuaAPI.lua_rawset(L, -3);  //“LuaClassIndexs”的table中设置键值对：type - 闭包函数
 			LuaAPI.lua_pop(L, 1);
 
 			LuaAPI.lua_rawset(L, cls_meta_idx);
@@ -1473,14 +1493,15 @@ namespace XLua
 				//  第二层的键值对应该在第一层的table中设立，而不在总的“CSHARP_NAMESPACE的table”中设立，
 				//  如果某个总的命名空间下有多个子的命名空间，如"System.Text", "System.IO"，
 				//  此时只需要在“path[i] = System”的value表中查找“Text”和“IO”
-				//  因此每次迭代完毕后，栈顶存放的都是上次迭代的LUA_TTABLE值，以便继续进行下一次迭代
+				//  因此每次迭代完毕后，栈顶存放的都是上次迭代的"path[i]的"LUA_TTABLE值，以便继续进行下一次迭代
 				//2.每次迭代后都移除“-2”，是为了避免在循环遍历的过程中，栈中元素过多，因此把不需要的元素都删除掉
 				//******* END: 重要问题 ***********
 			}
 
 			//由于遍历条件限制“i < path.Count -1”，因此遍历结束后栈顶存放的是classname的上一次命名空间的LUA_TTABLE值
 			LuaAPI.xlua_pushasciistring(L, path[path.Count - 1]);  //将classname作为key入栈
-			LuaAPI.lua_pushvalue(L, cls_table);  //将“cls_table”索引处的值拷贝副本并入栈
+			LuaAPI.lua_pushvalue(L, cls_table);  //将“cls_table”索引处的值拷贝副本并入栈，并不是将“cls_table”入栈
+			//也就是说此时入栈的是cls_table的空表，所以下面“lua_rawset”赋值时也是将table进行赋值，而非索引number
 			//在classname的直接父类的table中设置键值对，但注意：
 			LuaAPI.lua_rawset(L, -3);
 			//移除唯一剩下的命名空间table，此时栈恢复初始配置。至此该type在“CSHARP_NAMESPACE”表格中的的路径配置结束
@@ -1490,18 +1511,30 @@ namespace XLua
             LuaAPI.xlua_pushasciistring(L, LuaEnv.CSHARP_NAMESPACE);
             LuaAPI.lua_rawget(L, LuaIndexes.LUA_REGISTRYINDEX);
             //将type对象根据不同的类型进行相应的转换后，将转换后的数值压入栈中，后续作为key使用
+            /* 问题：为什么这里不同“PushByType”，而直接用“PushAny”
+             * 解答：首先这里为什么要压入“type”(这个“object”是“Type”类型的参数)？
+             *        压入的主要目的在于：将该“type”作为key来使用
+             *        “PushByType”方法中只针对常用的数据类型“int, string, byte”等设置了直接的“Delegate”方法
+             *        而“typeof(type)”得到的是“System.RuntimeType”，则必然不在“push_func_with_type”中
+             *        因此这里直接使用“PushAny”方法。但理论上来讲调用“PushByType”是没有问题的
+             */
             ObjectTranslatorPool.Instance.Find(L).PushAny(L, type);
 			LuaAPI.lua_pushvalue(L, cls_table);   //将“cls_table”索引处的值(本质上是一个table)做副本并压入栈
 			LuaAPI.lua_rawset(L, -3);
 
-			/********** START: 问题 *************
-			 * 描述：遍历完全结束后，“CSHARP_NAMESPACE”的table中已经存在任意type的完整路径，包含该type最终的table
+			/* 问题：遍历完全结束后，“CSHARP_NAMESPACE”的table中已经存在任意type的完整路径，包含该type最终的table
 			 *      那么为什么又要重新使用“PushAny”将该type入栈，再次在”CSHARP_NAMESPACE“的table中设置
-			 *      该type的直接路径：CSHARP_NAMESPACE[type] = "cls_table"的table
-			 *      如果这样的做是为了方便直接在CSHARP_NAMESPACE的table中查找该type的table(好处在于有该type的直接key)
-			 *      那么使用遍历的原因又是什么？为什么要通过遍历得到所有类型的路径配置表后(所有type共享)
-			 *      又额外生成该type的直接键值对？
-			 ********** END: 问题 *************/
+			 * 解答：1.注册表中“CSHARP_NAMESPACE”的value与全局变量“CS”的value相同，
+			 *        每个type.tostring是包含该type的namespace的全名，因此通过将type全名进行解析
+			 *        可以使得全局变量“CS”中的元素更为完善。当需要通过全局变量“CS”查找某些元素时可以更为方便
+			 *      2.解析type全名得到的都是以string作为key的table，并且以父类命名空间建表
+			 *        (极端情况：当父级namespace只有一个时，则“CSHARP_NAMESPACE”的table中则只有一个元素)
+			 *        增加“以type作为key，以该type的具体内容table在注册表中的索引作为value”的键值对
+			 *        直接效果是：可以在全局变量“CS”的table中直接通过type查找到其value，
+			 *        而不用将type转换成string格式并拆分后依次在“CS”的table中查找以最终查找到该type的具体内容在注册表中的索引
+			 *
+			 *      该type的直接路径：CSHARP_NAMESPACE[type] = RegistryTable[cls_table]
+			 */
 
 			LuaAPI.lua_pop(L, 1);  //将”CSHARP_NAMESPACE“配置表出栈，恢复栈初始配置
 		}

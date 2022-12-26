@@ -2,11 +2,22 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
+using System.Reflection;
 using DetailComment;
+using Unity.VisualScripting;
 using UnityEngine;
+using XLua;
 
+[LuaCallCSharp]
 public class CustomTest : MonoBehaviour
 {
+    private int testCount;
+
+    public CustomTest(int _num) {
+        testCount = _num;
+    }
+
+    public delegate void TestMyOwnDelegate(int a);
     void Start() {
         //TestTypeDetails();
 
@@ -15,10 +26,20 @@ public class CustomTest : MonoBehaviour
 
         //LoadLuaFile();
 
+        TestMyOwnDelegate aDelegate = MethodOne;
+        Debug.LogFormat("type: {0}", aDelegate.Method.GetType());
+    }
+
+    public void MethodOne(int num) {
+        num = 100;
+    }
+
+    public static void TestStaticMethod(int num) {
+        num = 200;
     }
 
     //加载Lua文件的方式
-    void LoadLuaFile() {
+    public void LoadLuaFile() {
         /* Resources.Load无法加载“xxx.lua”文件
         string filename = "a";
         var textAsset =  Resources.Load(filename) as TextAsset;
@@ -28,6 +49,7 @@ public class CustomTest : MonoBehaviour
         var content = File.ReadAllText(path);
         Debug.LogFormat("content: {0}", content);
     }
+
     //测试Type中的诸多特性
     void TestTypeDetails() {
         Src01 temp = new Src01();
@@ -57,6 +79,7 @@ namespace DetailComment
     {
         public class A
         {
+
 
         }
     }

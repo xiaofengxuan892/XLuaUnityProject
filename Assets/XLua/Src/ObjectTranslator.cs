@@ -151,18 +151,24 @@ namespace XLua
             //但由于是这里是为基类类型创建的table，所以通常将这里创建的table作为“元表”来使用
             //但该table从本质上来讲和普通的table并没有区别
             //并且该方法最终会将新创建的table压入栈
+            /* PS：这里使用“luaL_newmetatable”为该type生成元表，这一步真的有必要吗？
+             *     不管是“xxxWrap.cs”中的“Register”方法还是“ReflectionWrap”中的动态反射
+             *     都会为该type生成元表，所以这里完全没有必要又重复写一次啊！！！
+             */
             LuaAPI.luaL_newmetatable(L, type.FullName); //先建一个metatable，因为加载过程可能会需要用到
             LuaAPI.lua_pop(L, 1);     //将新建的table出栈，恢复栈L原始配置
 
             Action<RealStatePtr> loader;
             int top = LuaAPI.lua_gettop(L);
-            //部分type需要延时加载，此时使用该type专用的“loader”逻辑加载
+            //针对于预先调用Tools方法生成的自定义C#脚本的wrap文件，此时执行其“__Register”方法，而无需使用默认的反射
+            //这些自定义的wrap文件只有在Lua执行过程中需要用到的时候才会加载，如果一直没有用到，则无需加载
+            //并且一经加载则永远在注册表中有键值对组合，之后无需再次加载
             if (delayWrap.TryGetValue(type, out loader))
             {
                 delayWrap.Remove(type);   //从延时加载的集合中删除该type元素，避免重复加载
                 loader(L);  //开始加载该类型
             }
-            else
+            else                 //如果不是自定义的wrap文件，则使用反射获取 —— 此步骤很费性能，一般不使用该方法
             {
                 //通用的加载type的逻辑
 #if !GEN_CODE_MINIMIZE && !ENABLE_IL2CPP && (UNITY_EDITOR || XLUA_GENERAL) && !FORCE_REFLECTION && !NET_STANDARD_2_0
@@ -190,11 +196,17 @@ namespace XLua
                 }
 #endif
             }
+
+            //执行完该type的loader方法后，栈中配置不能有丝毫改变。
+            //无论是delayWrap，还是relfectionWrap，都只是为该type生成obj元表以及class表，
+            //并在注册表以及“CSHARP_NAMESPACE”中建立该type的键值对
+            //设置完毕后即会将所有新增元素出栈，保持栈初始配置，因此top个数保持不变
             if (top != LuaAPI.lua_gettop(L))
             {
                 throw new Exception("top change, before:" + top + ", after:" + LuaAPI.lua_gettop(L));
             }
 
+            //如果当前type有嵌套类，则继续将嵌套类也在注册表以及“CSHARP_NAMESPACE”中设立键值对
             foreach (var nested_type in type.GetNestedTypes(BindingFlags.Public))
             {
                 if (nested_type.IsGenericTypeDefinition())
@@ -622,6 +634,7 @@ namespace XLua
             }
             else
             {
+                //如果不是委托，
                 LuaAPI.lua_unref(L, reference);
             }
         }
@@ -881,9 +894,12 @@ namespace XLua
         public Type GetTypeOf(RealStatePtr L, int idx)
         {
             Type type = null;
+            //根据“xlua.c”中“xlua_gettypeid”的执行逻辑：仅仅只是检测“LUA_TUSERDATA”类型数据
+            //注意：每个LUA_TUSERDATA类型数据在入栈时都为其设置了该Type数据的元表key,即使用lua_ref在注册表中生成的key
             int type_id = LuaAPI.xlua_gettypeid(L, idx);
             if (type_id != -1)
             {
+                //这里仅仅只是获取其type，而不包含该type内部的数据(这里只是在C#中使用而已)
                 typeMap.TryGetValue(type_id, out type);
             }
             return type;
@@ -973,13 +989,16 @@ namespace XLua
         public void PushByType<T>(RealStatePtr L,  T v)
         {
             Action<RealStatePtr, T> push_func;
+            //由于这里的“T”是C#中的数据类型，因此可以直接
             if (tryGetPushFuncByType(typeof(T), out push_func))
             {
-                push_func(L, v);
+                //根据参数“T”不同的类型查找到对应的转换方法，这里只支持C#中常用的数据类型(IntPtr)
+                //不包含“LuaTable”, "LuaFunction"等新建的类型
+                push_func(L, v);  //执行该类型的方法，即调用Action中封装的“pushXXX”将该参数T压入栈
             }
             else
             {
-                PushAny(L, v);
+                PushAny(L, v);  //调用方式将目标参数压入栈(同样区分参数类型)
             }
         }
 
@@ -1090,7 +1109,11 @@ namespace XLua
                 if (typeof(MulticastDelegate).IsAssignableFrom(type))
                 {
                     if (common_delegate_meta == -1) throw new Exception("Fatal Exception! Delegate Metatable not inited!");
-                    TryDelayWrapLoader(L, type);
+                    TryDelayWrapLoader(L, type);   //这里有装逼的嫌疑：
+                                                   //从代码执行来看，“common_delegate_meta”在“LuaEnv”的构造方法中
+                                                   //分别通过“translator.OpenLib”和“translator.CreateDelegateMetatable”已经设置好了元表
+                                                   //而从“TryDelayWrapLoader”中并没有看到对“common_delegate_meta”作修改的逻辑，
+                                                   //因此可以判定，这里额外添加“TryDelayWrapLoader”有装逼、并混淆视听的嫌疑
                     return common_delegate_meta;
                 }
 
@@ -1112,6 +1135,8 @@ namespace XLua
                     //此时使用“TryDelayWrapLoader”强制生成
                     if (TryDelayWrapLoader(L, alias_type == null ? type : alias_type))
                     {
+                        //wrap只是为该type的obj元表和class在注册表以及“CSHARP_NAMESPACE”中设立键值对，并不会将其入栈
+                        //因此这里依然需要使用“rawget”将注册表中该type的obj元表入栈
                         LuaAPI.luaL_getmetatable(L, alias_type == null ? type.FullName : alias_type.FullName);
                     }
                     else
@@ -1122,12 +1147,17 @@ namespace XLua
                 }
 
                 //循环依赖，自身依赖自己的class，比如有个自身类型的静态readonly对象。
+                //严重怀疑这句话的必要性：从上一次执行“typeIdMap.TryGetValue”到本次执行“typeIdMap.TryGetValue”之间
+                //唯一有可能造成“typeIdMap”集合数据改变的是“TryDelayWrapLoader”
+                //但在“TryDelayWrapLoader”内部没有任何改变“typeIdMap”的代码
+                //所以这里再次调用“typeIdMap.TryGetValue”是为了装逼，还是故意混淆视听？
                 if (typeIdMap.TryGetValue(type, out type_id))
                 {
                     LuaAPI.lua_pop(L, 1);
                 }
                 else
                 {
+                    //如果该type为枚举或迭代类型，则需要另外添加“__band”, "__bor", "__pairs"等元方法
                     if (type.IsEnum())
                     {
                         //在指定table中创建"枚举中“位与”运算"key-value：
@@ -1150,16 +1180,15 @@ namespace XLua
                         LuaAPI.lua_getref(L, enumerable_pairs_func);
                         LuaAPI.lua_rawset(L, -3);
                     }
-                    //为栈上指定索引处的元素生成副本，并将该副本压入栈
+                    //将type.fullname的value拷贝副本入栈，
                     LuaAPI.lua_pushvalue(L, -1);
                     //为当前栈顶元素在指定table中生成key，并将该栈顶元素出栈
                     type_id = LuaAPI.luaL_ref(L, LuaIndexes.LUA_REGISTRYINDEX);
 
+                    //TODO: 不明白，在创建obj元表时就已经在注册表中设立了键值对：type.fullname - obj元表
+                    //      这里为什么还要使用“luaL_ref”再次生成type_id？
+
                     LuaAPI.lua_pushnumber(L, type_id);
-                    /******** 核心 **********
-                     * 为什么每次压入LuaCSFunction时使用的index都是“1”？
-                     * 每个类型元表中key为1的数值代表的是其在注册表中的key
-                     */
                     LuaAPI.xlua_rawseti(L, -2, 1);
                     LuaAPI.lua_pop(L, 1);  //类型元表出栈，栈恢复初始配置
 
@@ -1236,7 +1265,7 @@ namespace XLua
             {
                 pushPrimitive(L, o);
             }
-            else if (o is string)
+            else if (o is string)  //这里有点乱啊，一会使用”o.GetType()“进行比较，一会直接使用”o“比较，为什么不统一下
             {
                 LuaAPI.lua_pushstring(L, o as string);
             }
@@ -1365,7 +1394,7 @@ namespace XLua
             }
 
             bool is_first;   //这个“is_first”指代的是是否初次往“typeIdMap”中添加该type
-            //获取该object类型元表在注册表中的key
+            //获取该type的obj元表在注册表中的引用
             int type_id = getTypeId(L, type, out is_first);
 
             //如果一个type的定义含本身静态readonly实例时，getTypeId会push一个实例，这时候应该用这个实例
@@ -1377,6 +1406,7 @@ namespace XLua
                 }
             }
 
+            //获取该object在“ObjectPool”的数组集合中的index索引，作为objId
             index = addObject(o, is_valuetype, is_enum);
             LuaAPI.xlua_pushcsobj(L, index, type_id, needcache, cacheRef);
         }
@@ -1602,6 +1632,10 @@ namespace XLua
         public delegate object GetCSObject(RealStatePtr L, int idx);
         public delegate void UpdateCSObject(RealStatePtr L, int idx, object obj);
 
+        //本质上来讲“custom_push_func”与“push_func_with_type”并无区别，
+        //都是根据不同的Object类型使用相对应的“Delegate”方法，如Action或Func委托等将Object对象压入栈中
+        //这里其实有些过于复杂和多余了，可以简化下
+        //后面的“PushAny”，“Push”等其实作用跟这也差不多，可以都统一下，现在这样太乱了
         private Dictionary<Type, PushCSObject> custom_push_funcs = new Dictionary<Type, PushCSObject>();
         private Dictionary<Type, GetCSObject> custom_get_funcs = new Dictionary<Type, GetCSObject>();
         private Dictionary<Type, UpdateCSObject> custom_update_funcs = new Dictionary<Type, UpdateCSObject>();
@@ -1626,6 +1660,7 @@ namespace XLua
             {
                 push_func_with_type = new Dictionary<Type, Delegate>()
                 {
+                    //这里在赋值“Delegate”时使用两种不同的形式创建“Delegate”，本质上是一样的，应该整理成一种，有点“装逼”的嫌疑
                     {typeof(int),  new Action<RealStatePtr, int>(LuaAPI.xlua_pushinteger) },
                     {typeof(double), new Action<RealStatePtr, double>(LuaAPI.lua_pushnumber) },
                     {typeof(string), new Action<RealStatePtr, string>(LuaAPI.lua_pushstring) },
@@ -1710,6 +1745,9 @@ namespace XLua
             Type type = typeof(T);
             Action<RealStatePtr, T> org_push;
             Func<RealStatePtr, int, T> org_get;
+            //当“push_func_with_type”字典集合中已经有该type类型时则直接报异常并终止
+            //TODO: 为什么不将“RegisterPushAndGetAndUpdate”的调用与“push_func_with_type”内部的赋值元素直接合并在一起用来赋值
+            //这样写又乱又多此一举
             if (tryGetPushFuncByType(type, out org_push) || tryGetGetFuncByType(type, out org_get))
             {
                 throw new InvalidOperationException("push or get of " + type + " has register!");
@@ -1721,6 +1759,8 @@ namespace XLua
                 return ret;
             }));
 
+            //这里实际上也是将“Action<RealStatePtr, T> push”再次进行封装成“PushCSObject”的Delegate类型(并不执行，只是赋值)
+            //那最后得到的“push_func_with_type”与“custom_push_func”本质上并无区别
             registerCustomOp(type,
                 (RealStatePtr L, object obj) => {
                     push(L, (T)obj);

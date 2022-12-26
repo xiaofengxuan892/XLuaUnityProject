@@ -41,6 +41,7 @@ namespace XLua
 				translator.RegisterPushAndGetAndUpdate<XLuaTest.MyEnum>(translator.PushXLuaTestMyEnum, translator.Get, translator.UpdateXLuaTestMyEnum);
 				translator.RegisterPushAndGetAndUpdate<Tutorial.DerivedClass.TestEnumInner>(translator.PushTutorialDerivedClassTestEnumInner, translator.Get, translator.UpdateTutorialDerivedClassTestEnumInner);
 			
+				translator.RegisterCaster<XLuaTest.Foo2Parent>(translator.Get);
 			}
         }
         
@@ -1026,6 +1027,29 @@ namespace XLua
         
 		// table cast optimze
 		
+		public void Get(RealStatePtr L, int index, out XLuaTest.Foo2Parent val)
+        {
+		    LuaTypes type = LuaAPI.lua_type(L, index);
+            if (type == LuaTypes.LUA_TUSERDATA )
+            {
+			    val = (XLuaTest.Foo2Parent)FastGetCSObj(L, index);
+            }
+			else if (type == LuaTypes.LUA_TTABLE)
+			{
+			    val = new XLuaTest.Foo2Parent();
+				int top = LuaAPI.lua_gettop(L);
+				
+			}
+            else if (type == LuaTypes.LUA_TNIL || type == LuaTypes.LUA_TNONE)
+            {
+                val = null;
+            }
+            else
+            {
+                throw new Exception("can not cast " + LuaAPI.lua_type(L, index) + " to " + typeof(XLuaTest.Foo2Parent));
+            }
+        }
+		
         
     }
 	
@@ -1205,6 +1229,12 @@ namespace XLua
 			else if (type == typeof(Tutorial.DerivedClass.TestEnumInner[]))
 			{
 			    Tutorial.DerivedClass.TestEnumInner[] array = obj as Tutorial.DerivedClass.TestEnumInner[];
+				translator.Get(L, obj_idx, out array[array_idx]);
+				return true;
+			}
+			else if (type == typeof(XLuaTest.Foo2Parent[]))
+			{
+			    XLuaTest.Foo2Parent[] array = obj as XLuaTest.Foo2Parent[];
 				translator.Get(L, obj_idx, out array[array_idx]);
 				return true;
 			}

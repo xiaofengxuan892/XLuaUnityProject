@@ -38,13 +38,18 @@ namespace XLua
                 var L = luaEnv.L;
                 var translator = luaEnv.translator;
                 int oldTop = LuaAPI.lua_gettop(L);
+                //根据“xlua.c”中“load_error_func”执行逻辑可知：
+                //根据“errorFuncRef”将注册表中该key的value压入栈中，并返回当前栈中元素个数，即“errorFunc”在栈中的索引
                 int errFunc = LuaAPI.load_error_func(L, luaEnv.errorFuncRef);
+                //将注册表中key为此LuaBase对象的luaReference的value压入栈
+                //注意：LuaFunction本身已经是chunk代码块，只需要读取Lua文件中的string代码即可
                 LuaAPI.lua_getref(L, luaReference);
-                translator.PushByType(L, a);
+                translator.PushByType(L, a);  //将该参数的C#类型使用“xlua.dll”中相应的方法转换后压入栈中
+                //执行该LuaFunction方法，并返回执行结果(代表程序是否执行正常，此结果并不会入栈)
                 int error = LuaAPI.lua_pcall(L, 1, 0, errFunc);
                 if (error != 0)
                     luaEnv.ThrowExceptionFromError(oldTop);
-                LuaAPI.lua_settop(L, oldTop);
+                LuaAPI.lua_settop(L, oldTop);  //由于该Action没有返回值，因此直接恢复栈初始配置
 #if THREAD_SAFE || HOTFIX_ENABLE
             }
 #endif
@@ -60,6 +65,7 @@ namespace XLua
                 var translator = luaEnv.translator;
                 int oldTop = LuaAPI.lua_gettop(L);
                 int errFunc = LuaAPI.load_error_func(L, luaEnv.errorFuncRef);
+                //将该Lua代码块入栈(LuaFunction，即Lua文件中编写的"function.....end"方法)
                 LuaAPI.lua_getref(L, luaReference);
                 translator.PushByType(L, a);
                 int error = LuaAPI.lua_pcall(L, 1, 1, errFunc);
@@ -68,6 +74,10 @@ namespace XLua
                 TResult ret;
                 try
                 {
+                    //本质上由于当前返回值只有一个，故栈顶元素必然是“lua_pcall”的返回值，
+                    //因此可以直接使用“lua_pop(L, 1)”将栈顶元素出栈即可
+                    //但纵然出栈，也依然需要根据该返回值不同的类型使用ObjectCast进行转换才能得到最终结果
+
                     translator.Get(L, -1, out ret);
                 }
                 catch (Exception e)
